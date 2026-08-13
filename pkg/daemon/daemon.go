@@ -47,6 +47,7 @@ func setupRoutes() *gin.Engine {
 	router.PUT("/prevent-idle-sleep", setPreventIdleSleep)
 	router.PUT("/disable-charging-pre-sleep", setDisableChargingPreSleep)
 	router.PUT("/prevent-system-sleep", setPreventSystemSleep)
+	router.PUT("/prevent-sleep-on-adapter-disable", setPreventSleepOnAdapterDisable)
 	router.PUT("/adapter", setAdapter)
 	router.PUT("/adapter/disable", setAdapterDisableFor)
 	router.GET("/adapter", getAdapter)
@@ -101,8 +102,10 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	if configPath != "" {
 		dir := filepath.Dir(configPath)
 		initCalibrationState(filepath.Join(dir, "batt.state.json"))
+		initSleepDisabledState(filepath.Join(dir, "batt.sleep.json"))
 	} else {
 		initCalibrationState("/etc/batt.state.json")
+		initSleepDisabledState("/etc/batt.sleep.json")
 	}
 	disableUnsupportedCalibrationState()
 	restoreCalibrationSleepAssertion()
@@ -254,6 +257,10 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		if err := smcConn.EnableAdapter(); err != nil {
 			logrus.Errorf("failed to re-enable adapter before exiting: %v", err)
 		}
+	}
+
+	if err := releaseAllSleepHolds(); err != nil {
+		logrus.Errorf("failed to restore SleepDisabled before exiting: %v", err)
 	}
 
 	logrus.Info("closing smc connection")

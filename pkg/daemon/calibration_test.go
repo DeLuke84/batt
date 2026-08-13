@@ -25,12 +25,13 @@ type mockConf struct {
 	adapterDisableUntil time.Time
 }
 
-func (m *mockConf) UpperLimit() int               { return m.upper }
-func (m *mockConf) LowerLimit() int               { return m.lower }
-func (m *mockConf) PreventIdleSleep() bool        { return false }
-func (m *mockConf) DisableChargingPreSleep() bool { return false }
-func (m *mockConf) PreventSystemSleep() bool      { return false }
-func (m *mockConf) AllowNonRootAccess() bool      { return false }
+func (m *mockConf) UpperLimit() int                    { return m.upper }
+func (m *mockConf) LowerLimit() int                    { return m.lower }
+func (m *mockConf) PreventIdleSleep() bool             { return false }
+func (m *mockConf) DisableChargingPreSleep() bool      { return false }
+func (m *mockConf) PreventSystemSleep() bool           { return false }
+func (m *mockConf) PreventSleepOnAdapterDisable() bool { return false }
+func (m *mockConf) AllowNonRootAccess() bool           { return false }
 func (m *mockConf) ControlMagSafeLED() config.ControlMagSafeMode {
 	return config.ControlMagSafeModeDisabled
 }
@@ -42,6 +43,7 @@ func (m *mockConf) SetUpperLimit(i int)                            { m.upper = i
 func (m *mockConf) SetLowerLimit(i int)                            { m.lower = i }
 func (m *mockConf) SetPreventIdleSleep(bool)                       {}
 func (m *mockConf) SetDisableChargingPreSleep(bool)                {}
+func (m *mockConf) SetPreventSleepOnAdapterDisable(bool)           {}
 func (m *mockConf) SetPreventSystemSleep(bool)                     {}
 func (m *mockConf) SetAllowNonRootAccess(bool)                     {}
 func (m *mockConf) SetControlMagSafeLED(config.ControlMagSafeMode) {}

@@ -22,8 +22,8 @@ var (
 	smcEnableCharging       = func() error { return smcConn.EnableCharging() }
 	smcDisableCharging      = func() error { return smcConn.DisableCharging() }
 	smcIsAdapterEnabled     = func() (bool, error) { return smcConn.IsAdapterEnabled() }
-	smcEnableAdapter        = func() error { return smcConn.EnableAdapter() }
-	smcDisableAdapter       = func() error { return smcConn.DisableAdapter() }
+	smcEnableAdapter        = func() error { return enableAdapterWithSleepPolicy() }
+	smcDisableAdapter       = func() error { return disableAdapterWithSleepPolicy() }
 	smcIsPluggedIn          = func() (bool, error) { return smcConn.IsPluggedIn() }
 	preventCalibrationSleep = PreventCalibrationSleep
 	allowCalibrationSleep   = AllowCalibrationSleep
