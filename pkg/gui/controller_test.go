@@ -42,3 +42,70 @@ func TestCalibrationAndTemporaryDisableMenuExclusion(t *testing.T) {
 		})
 	}
 }
+
+func TestChargeOnceMenuAvailability(t *testing.T) {
+	tests := []struct {
+		name             string
+		phase            calibration.Phase
+		disableScheduled bool
+		chargeOnceTarget int
+		upperLimit       int
+		currentCharge    int
+		wantLimit        bool
+		wantFull         bool
+	}{
+		{
+			name: "inside the hysteresis gap", upperLimit: 70, currentCharge: 58,
+			wantLimit: true, wantFull: true,
+		},
+		{
+			// Already at the limit: charging to it would do nothing, but the
+			// battery can still be topped up to 100%.
+			name: "already at the limit", upperLimit: 70, currentCharge: 70,
+			wantLimit: false, wantFull: true,
+		},
+		{
+			name: "already full", upperLimit: 70, currentCharge: 100,
+			wantLimit: false, wantFull: false,
+		},
+		{
+			name: "batt is not limiting charging", upperLimit: 100, currentCharge: 58,
+			wantLimit: false, wantFull: false,
+		},
+		{
+			// Before the first successful config fetch the menu knows no limit.
+			name: "limit not known yet", upperLimit: 0, currentCharge: 0,
+			wantLimit: false, wantFull: false,
+		},
+		{
+			name: "one-time charge already running", upperLimit: 70, currentCharge: 58,
+			chargeOnceTarget: 100, wantLimit: false, wantFull: false,
+		},
+		{
+			name: "calibration owns the charge limit", phase: calibration.PhaseCharge,
+			upperLimit: 70, currentCharge: 58, wantLimit: false, wantFull: false,
+		},
+		{
+			name: "temporary disable is scheduled", disableScheduled: true,
+			upperLimit: 70, currentCharge: 58, wantLimit: false, wantFull: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			phase := tt.phase
+			if phase == "" {
+				phase = calibration.PhaseIdle
+			}
+
+			got := canChargeOnceToLimit(phase, tt.disableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
+			if got != tt.wantLimit {
+				t.Errorf("canChargeOnceToLimit() = %v, want %v", got, tt.wantLimit)
+			}
+			got = canChargeOnceToFull(phase, tt.disableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
+			if got != tt.wantFull {
+				t.Errorf("canChargeOnceToFull() = %v, want %v", got, tt.wantFull)
+			}
+		})
+	}
+}
