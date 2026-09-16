@@ -30,6 +30,7 @@ var (
 	ErrChargeOnceInProgress = errors.New("a one-time charge is already in progress. Cancel it first with 'batt charge cancel'")
 	ErrChargeOnceNotRunning = errors.New("no one-time charge is in progress")
 	ErrChargeLimitDisabled  = errors.New("batt is not limiting charging, so a one-time charge would have no effect. Set a limit first with 'batt limit <percentage>'")
+	ErrChargeLimitTooLow    = errors.New("the configured charge limit is below 10%, which batt does not support. Set a valid limit with 'batt limit <percentage>'")
 )
 
 // resolveChargeOnceTarget returns the charge percentage a one-time charge aims
@@ -38,6 +39,11 @@ func resolveChargeOnceTarget(conf config.Config, full bool) (int, error) {
 	limit := conf.UpperLimit()
 	if limit >= 100 {
 		return 0, ErrChargeLimitDisabled
+	}
+	// A hand-edited config can hold a limit batt never writes. Below 10% there
+	// is no valid target to hand control back to, and storing one is rejected.
+	if limit < 10 {
+		return 0, ErrChargeLimitTooLow
 	}
 	if full {
 		return 100, nil

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/charlie0129/batt/pkg/calibration"
 	"github.com/charlie0129/batt/pkg/compatibility"
+	"github.com/charlie0129/batt/pkg/config"
 	"github.com/charlie0129/batt/pkg/smc"
+	"github.com/charlie0129/batt/pkg/utils/ptr"
 )
 
 // stubBatteryCharge replaces the battery-charge test seam for one test.
@@ -59,6 +62,9 @@ func TestResolveChargeOnceTarget(t *testing.T) {
 		{name: "to full", upper: 70, full: true, want: 100},
 		{name: "limit disabled", upper: 100, wantErr: ErrChargeLimitDisabled},
 		{name: "limit disabled, full requested", upper: 100, full: true, wantErr: ErrChargeLimitDisabled},
+		// A hand-edited config can hold a limit batt never writes.
+		{name: "limit below the supported range", upper: 5, wantErr: ErrChargeLimitTooLow},
+		{name: "limit below the supported range, full requested", upper: 5, full: true, wantErr: ErrChargeLimitTooLow},
 	}
 
 	for _, tt := range tests {
@@ -687,5 +693,40 @@ func TestEnablingTheAdapterKeepsChargeOnce(t *testing.T) {
 	}
 	if configured.chargeOnceTarget != 100 {
 		t.Fatalf("chargeOnceTarget = %d, want 100", configured.chargeOnceTarget)
+	}
+}
+
+func TestStartChargeOnceWithAHandEditedLimit(t *testing.T) {
+	// config.File rejects a target below 10%, and ChargeOnceTarget reads such a
+	// value as absent. A hand-edited limit below 10% must therefore be refused
+	// before it reaches the config, not panic its way into a 500.
+	configured := config.NewFileFromConfig(
+		&config.RawFileConfig{Limit: ptr.To(5), LowerLimitDelta: ptr.To(2)},
+		filepath.Join(t.TempDir(), "batt.json"),
+	)
+	previousConf, previousCapabilities := conf, capabilities
+	previousState, previousStatePath := calibrationState, calibrationStatePath
+	t.Cleanup(func() {
+		conf, capabilities = previousConf, previousCapabilities
+		calibrationState, calibrationStatePath = previousState, previousStatePath
+	})
+	conf = configured
+	capabilities = compatibility.Capabilities{ChargingControl: true}
+	calibrationState = &calibration.State{Phase: calibration.PhaseIdle}
+	calibrationStatePath = ""
+	stubBatteryCharge(t, 3)
+
+	for _, path := range []string{"/charge-once/limit", "/charge-once/full"} {
+		response := postChargeOnce(path)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want %d; body: %s", path, response.Code, http.StatusBadRequest, response.Body.String())
+		}
+		// gin escapes the "<percentage>" hint, so match the reason only.
+		if !strings.Contains(response.Body.String(), "charge limit is below 10%") {
+			t.Fatalf("%s response does not explain the rejection: %s", path, response.Body.String())
+		}
+		if configured.ChargeOnceTarget() != 0 {
+			t.Fatalf("%s started a one-time charge to %d%%", path, configured.ChargeOnceTarget())
+		}
 	}
 }
