@@ -70,6 +70,7 @@ func setLimit(c *gin.Context) {
 	conf.SetUpperLimit(l)
 	// An explicit limit change overrides any pending scheduled re-enabling.
 	conf.ClearDisableTimer()
+	supersedeChargeOnce(fmt.Sprintf("charge limit set to %d%%", l))
 	if err := conf.Save(); err != nil {
 		logrus.Errorf("saveConfig failed: %v", err)
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
@@ -168,6 +169,7 @@ func setDisableFor(c *gin.Context) {
 	}
 
 	until := time.Now().Add(d).Truncate(time.Second)
+	supersedeChargeOnce("charge limit temporarily disabled")
 	conf.SetUpperLimit(100)
 	conf.SetDisableTimer(until, prevLimit)
 	if err := conf.Save(); err != nil {
@@ -665,6 +667,84 @@ func getEventStream(c *gin.Context) {
 			flusher.Flush()
 		}
 	}
+}
+
+// ===== One-Time Charge Handlers =====
+
+func postChargeOnceToLimit(c *gin.Context) { startChargeOnceRequest(c, false) }
+
+func postChargeOnceToFull(c *gin.Context) { startChargeOnceRequest(c, true) }
+
+func startChargeOnceRequest(c *gin.Context, full bool) {
+	if !requireCapability(c, compatibility.FeatureChargingControl) {
+		return
+	}
+
+	chargeControlTransitionMu.Lock()
+	defer chargeControlTransitionMu.Unlock()
+
+	// Conflicts come first: a pending temporary disable also reads as a
+	// disabled charge limit, and naming the conflict tells the user what to do.
+	if err := chargeOnceConflict(conf); err != nil {
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+
+	target, err := resolveChargeOnceTarget(conf, full)
+	if err != nil {
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+
+	charge, err := smcGetBatteryCharge()
+	if err != nil {
+		logrus.Errorf("GetBatteryCharge failed: %v", err)
+		c.IndentedJSON(http.StatusInternalServerError, err.Error())
+		_ = c.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+
+	if charge >= target {
+		err := fmt.Errorf("battery is already at %d%%, which is at or above the %d%% target", charge, target)
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+
+	message := chargeOnceStartedMessage(target, charge, conf.UpperLimit())
+	if err := startChargeOnce(target, charge); err != nil {
+		logrus.Errorf("saveConfig failed: %v", err)
+		c.IndentedJSON(http.StatusInternalServerError, err.Error())
+		_ = c.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+
+	// Immediate single maintain loop, to avoid waiting for the next loop
+	maintainLoopForced()
+
+	c.IndentedJSON(http.StatusCreated, message)
+}
+
+func postCancelChargeOnce(c *gin.Context) {
+	if !requireCapability(c, compatibility.FeatureChargingControl) {
+		return
+	}
+
+	chargeControlTransitionMu.Lock()
+	defer chargeControlTransitionMu.Unlock()
+
+	target, err := cancelChargeOnce()
+	if err != nil {
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+
+	maintainLoopForced()
+
+	c.IndentedJSON(http.StatusOK, fmt.Sprintf("cancelled the one-time charge to %d%%, the %d%% charge limit applies again", target, conf.UpperLimit()))
 }
 
 // ===== Calibration Handlers =====

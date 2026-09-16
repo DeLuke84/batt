@@ -31,6 +31,9 @@ func infiniteLoop() {
 		if restoreDisabledLimit(conf, now) {
 			maintainLoopForced()
 		}
+		if completeChargeOnce(conf) {
+			maintainLoopForced()
+		}
 		if capabilities.AdapterControl {
 			maintainAdapterDisable(conf, now)
 		}
@@ -422,6 +425,10 @@ func maintainFirmwareChargeLimit() bool {
 		}
 	}
 
+	if target := activeChargeOnceTarget(); target > 0 {
+		return maintainFirmwareChargeOnce(target)
+	}
+
 	upper := conf.UpperLimit()
 	if upper >= 100 {
 		changed, err := smcConn.EnsureFirmwareChargeLimitDisabled()
@@ -451,6 +458,36 @@ func maintainFirmwareChargeLimit() bool {
 	return true
 }
 
+// maintainFirmwareChargeOnce hands the firmware a band that charges to the
+// one-time target instead of the configured band. The firmware API rejects
+// lower >= upper, so the band is the narrowest legal one. A battery sitting
+// exactly at target-1 may therefore stop one percent short of the target.
+func maintainFirmwareChargeOnce(target int) bool {
+	maintainedChargingInProgress = false
+
+	if target >= 100 {
+		changed, err := smcConn.EnsureFirmwareChargeLimitDisabled()
+		if err != nil {
+			logrus.Errorf("failed to deactivate firmware charge limit for the one-time charge: %v", err)
+			return false
+		}
+		if changed {
+			logrus.Info("deactivated firmware charge limit for a one-time charge to 100%")
+		}
+		return true
+	}
+
+	changed, err := smcConn.EnsureFirmwareChargeLimit(target-1, target)
+	if err != nil {
+		logrus.Errorf("failed to reconcile firmware charge limit for the one-time charge: %v", err)
+		return false
+	}
+	if changed {
+		logrus.WithField("target", target).Info("reconciled firmware charge limit for a one-time charge")
+	}
+	return true
+}
+
 // maintainLegacyCharging contains the original batt-managed charge loop.
 func maintainLegacyCharging(ignoreMissedLoops bool) bool {
 
@@ -477,8 +514,10 @@ func maintainLegacyCharging(ignoreMissedLoops bool) bool {
 		return false
 	}
 
+	chargeOnceTarget := activeChargeOnceTarget()
+
 	maintainedChargingInProgress = isChargingEnabled && isPluggedIn && calibrationState.Phase == calibration.PhaseIdle
-	printStatus(batteryCharge, lower, upper, isChargingEnabled, isPluggedIn, maintainedChargingInProgress, calibrationState.Phase != calibration.PhaseIdle)
+	printStatus(batteryCharge, lower, upper, chargeOnceTarget, isChargingEnabled, isPluggedIn, maintainedChargingInProgress, calibrationState.Phase != calibration.PhaseIdle)
 
 	// If calibration is active, advance it and skip normal maintain logic.
 	if applyCalibrationWithinLoop(batteryCharge) {
@@ -491,6 +530,14 @@ func maintainLegacyCharging(ignoreMissedLoops bool) bool {
 			// nothing
 		}
 		return true
+	}
+
+	// A one-time charge overrides the configured band until the battery reaches
+	// its target. Passing the target as both bounds removes the hysteresis gap,
+	// so charging starts right away instead of waiting for the charge to fall
+	// below the lower limit, and stops exactly at the target.
+	if chargeOnceTarget > 0 && batteryCharge < chargeOnceTarget {
+		return handleChargingLogic(ignoreMissedLoops, isChargingEnabled, isPluggedIn, batteryCharge, chargeOnceTarget, chargeOnceTarget)
 	}
 
 	// If maintain is disabled, we don't care about the battery charge, enable charging anyway.
@@ -514,6 +561,7 @@ type loopStatus struct {
 	batteryCharge                int
 	lower                        int
 	upper                        int
+	chargeOnceTarget             int
 	isChargingEnabled            bool
 	isPluggedIn                  bool
 	maintainedChargingInProgress bool
@@ -526,6 +574,7 @@ func printStatus(
 	batteryCharge int,
 	lower int,
 	upper int,
+	chargeOnceTarget int,
 	isChargingEnabled bool,
 	isPluggedIn bool,
 	maintainedChargingInProgress bool,
@@ -535,6 +584,7 @@ func printStatus(
 		batteryCharge:                batteryCharge,
 		lower:                        lower,
 		upper:                        upper,
+		chargeOnceTarget:             chargeOnceTarget,
 		isChargingEnabled:            isChargingEnabled,
 		isPluggedIn:                  isPluggedIn,
 		maintainedChargingInProgress: maintainedChargingInProgress,
@@ -545,6 +595,7 @@ func printStatus(
 		"batteryCharge":                batteryCharge,
 		"lower":                        lower,
 		"upper":                        upper,
+		"chargeOnceTarget":             chargeOnceTarget,
 		"chargingEnabled":              isChargingEnabled,
 		"isPluggedIn":                  isPluggedIn,
 		"maintainedChargingInProgress": maintainedChargingInProgress,

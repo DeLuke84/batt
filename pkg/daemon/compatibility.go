@@ -98,6 +98,10 @@ func disableUnsupportedConfiguredFeatures() {
 		conf.ClearAdapterDisableTimer()
 		changed = true
 	}
+	if !capabilities.ChargingControl && conf.ChargeOnceTarget() != 0 {
+		conf.ClearChargeOnceTarget()
+		changed = true
+	}
 	if !changed {
 		return
 	}

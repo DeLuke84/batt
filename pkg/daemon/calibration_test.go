@@ -23,6 +23,7 @@ type mockConf struct {
 	disableUntil        time.Time
 	preDisableLimit     int
 	adapterDisableUntil time.Time
+	chargeOnceTarget    int
 }
 
 func (m *mockConf) UpperLimit() int               { return m.upper }
@@ -65,6 +66,11 @@ func (m *mockConf) SetAdapterDisableTimer(until time.Time) {
 	m.adapterDisableUntil = until
 }
 func (m *mockConf) ClearAdapterDisableTimer() { m.adapterDisableUntil = time.Time{} }
+func (m *mockConf) ChargeOnceTarget() int     { return m.chargeOnceTarget }
+func (m *mockConf) SetChargeOnceTarget(target int) {
+	m.chargeOnceTarget = target
+}
+func (m *mockConf) ClearChargeOnceTarget() { m.chargeOnceTarget = 0 }
 
 // Fake smcConn implementation.
 type fakeSMC struct {

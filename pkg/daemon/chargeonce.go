@@ -1,0 +1,192 @@
+package daemon
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/sirupsen/logrus"
+
+	"github.com/charlie0129/batt/pkg/config"
+	"github.com/charlie0129/batt/pkg/events"
+)
+
+// A one-time charge charges the battery to a target percentage once and then
+// hands control straight back to the configured charge limit.
+//
+// It never writes the configured limit. That keeps the two halves simple: there
+// is nothing to restore when the target is reached, an interrupted daemon
+// cannot leave a 100% limit behind in the config file, and the quick limits keep
+// their usual meaning while a one-time charge runs.
+
+const (
+	chargeOnceActionStart    = "Start"
+	chargeOnceActionCancel   = "Cancel"
+	chargeOnceActionComplete = "Complete"
+)
+
+var (
+	ErrChargeOnceInProgress = errors.New("a one-time charge is already in progress. Cancel it first with 'batt charge cancel'")
+	ErrChargeOnceNotRunning = errors.New("no one-time charge is in progress")
+	ErrChargeLimitDisabled  = errors.New("batt is not limiting charging, so a one-time charge would have no effect. Set a limit first with 'batt limit <percentage>'")
+)
+
+// resolveChargeOnceTarget returns the charge percentage a one-time charge aims
+// for. Both variants need a configured limit to hand control back to.
+func resolveChargeOnceTarget(conf config.Config, full bool) (int, error) {
+	limit := conf.UpperLimit()
+	if limit >= 100 {
+		return 0, ErrChargeLimitDisabled
+	}
+	if full {
+		return 100, nil
+	}
+	return limit, nil
+}
+
+// chargeOnceConflict reports why a one-time charge cannot start right now.
+func chargeOnceConflict(conf config.Config) error {
+	if calibrationOwnsChargeLimit() {
+		return ErrCalibrationControlsChargeLimit
+	}
+	if !conf.DisableUntil().IsZero() {
+		return ErrTemporaryDisableInProgress
+	}
+	if conf.ChargeOnceTarget() != 0 {
+		return ErrChargeOnceInProgress
+	}
+	return nil
+}
+
+// activeChargeOnceTarget returns the target of a running one-time charge, or 0.
+// Calibration writes the charge limit itself, so a one-time charge persisted
+// before a restart waits until calibration finishes or is cancelled.
+func activeChargeOnceTarget() int {
+	if calibrationOwnsChargeLimit() {
+		return 0
+	}
+	return conf.ChargeOnceTarget()
+}
+
+// chargeOnceStartedMessage describes what the daemon just started doing.
+func chargeOnceStartedMessage(target, charge, limit int) string {
+	if target >= 100 {
+		return fmt.Sprintf("charging to 100%% once, currently at %d%%. The %d%% charge limit is restored automatically afterwards", charge, limit)
+	}
+	return fmt.Sprintf("charging to the %d%% charge limit now, currently at %d%%", target, charge)
+}
+
+// startChargeOnce persists a one-time charge to target. Callers hold
+// chargeControlTransitionMu and have already resolved conflicts.
+func startChargeOnce(target, charge int) error {
+	conf.SetChargeOnceTarget(target)
+	if err := conf.Save(); err != nil {
+		conf.ClearChargeOnceTarget()
+		return err
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"target": target,
+		"charge": charge,
+		"limit":  conf.UpperLimit(),
+	}).Info("started a one-time charge")
+
+	publishChargeOnceEvent(chargeOnceActionStart, target, chargeOnceStartedMessage(target, charge, conf.UpperLimit()))
+	return nil
+}
+
+// cancelChargeOnce stops a running one-time charge and returns its target. The
+// configured limit applies again immediately because it was never changed.
+func cancelChargeOnce() (int, error) {
+	target := conf.ChargeOnceTarget()
+	if target == 0 {
+		return 0, ErrChargeOnceNotRunning
+	}
+
+	conf.ClearChargeOnceTarget()
+	if err := conf.Save(); err != nil {
+		return 0, err
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"target": target,
+		"limit":  conf.UpperLimit(),
+	}).Info("cancelled the one-time charge")
+
+	publishChargeOnceEvent(chargeOnceActionCancel, target,
+		fmt.Sprintf("One-time charge cancelled. The %d%% charge limit applies again.", conf.UpperLimit()))
+	return target, nil
+}
+
+// supersedeChargeOnce drops a running one-time charge because the caller is
+// making an explicit charge-control change that replaces it. The caller saves
+// the config afterwards.
+func supersedeChargeOnce(reason string) {
+	target := conf.ChargeOnceTarget()
+	if target == 0 {
+		return
+	}
+
+	conf.ClearChargeOnceTarget()
+	logrus.WithFields(logrus.Fields{
+		"target": target,
+		"reason": reason,
+	}).Info("cancelled the one-time charge")
+
+	publishChargeOnceEvent(chargeOnceActionCancel, target,
+		fmt.Sprintf("One-time charge to %d%% cancelled: %s.", target, reason))
+}
+
+// completeChargeOnce ends a one-time charge once the battery has reached its
+// target, which hands control back to the configured limit. It reports whether
+// it ended one.
+func completeChargeOnce(conf config.Config) bool {
+	chargeControlTransitionMu.Lock()
+	defer chargeControlTransitionMu.Unlock()
+
+	target := conf.ChargeOnceTarget()
+	if target == 0 {
+		return false
+	}
+	// Calibration writes the charge limit itself. Keep the one-time charge
+	// pending until calibration finishes or is cancelled.
+	if calibrationOwnsChargeLimit() {
+		return false
+	}
+
+	charge, err := smcGetBatteryCharge()
+	if err != nil {
+		logrus.WithError(err).Error("failed to read battery charge for the one-time charge")
+		return false
+	}
+	if charge < target {
+		return false
+	}
+
+	conf.ClearChargeOnceTarget()
+	if err := conf.Save(); err != nil {
+		logrus.Errorf("saveConfig failed: %v", err)
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"target": target,
+		"charge": charge,
+		"limit":  conf.UpperLimit(),
+	}).Info("one-time charge reached its target, charge limit applies again")
+
+	publishChargeOnceEvent(chargeOnceActionComplete, target,
+		fmt.Sprintf("Charged to %d%%. The %d%% charge limit applies again.", charge, conf.UpperLimit()))
+	return true
+}
+
+func publishChargeOnceEvent(action string, target int, message string) {
+	if sseHub == nil {
+		return
+	}
+	sseHub.Publish(events.ChargeOnceAction, events.ChargeOnceActionEvent{
+		Action:  action,
+		Target:  target,
+		Message: message,
+		Ts:      time.Now().Unix(),
+	})
+}
