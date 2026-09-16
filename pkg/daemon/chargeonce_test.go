@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -568,5 +569,45 @@ func TestFirmwareChargeOnceCompletesAtTheTopOfItsBand(t *testing.T) {
 	}
 	if !state.Active || state.Lower != 78 || state.Upper != 80 {
 		t.Fatalf("firmware state = %+v, want active 78/80", state)
+	}
+}
+
+func TestCancelChargeOnceKeepsTheTargetWhenSaveFails(t *testing.T) {
+	// The config file still holds the target after a failed save, so dropping
+	// it from memory would make a retry report that nothing is running while a
+	// restart resumes the cancelled one-time charge.
+	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100, saveErr: errors.New("disk full")}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+
+	response := postChargeOnce("/charge-once/cancel")
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusInternalServerError, response.Body.String())
+	}
+	if configured.chargeOnceTarget != 100 {
+		t.Fatalf("chargeOnceTarget = %d, want 100 after a failed save", configured.chargeOnceTarget)
+	}
+
+	// The retry after a working disk cancels as usual.
+	configured.saveErr = nil
+	response = postChargeOnce("/charge-once/cancel")
+	if response.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if configured.chargeOnceTarget != 0 {
+		t.Fatalf("chargeOnceTarget = %d, want 0", configured.chargeOnceTarget)
+	}
+}
+
+func TestStartChargeOnceKeepsNoTargetWhenSaveFails(t *testing.T) {
+	configured := &mockConf{upper: 70, lower: 40, saveErr: errors.New("disk full")}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	stubBatteryCharge(t, 58)
+
+	response := postChargeOnce("/charge-once/limit")
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusInternalServerError, response.Body.String())
+	}
+	if configured.chargeOnceTarget != 0 {
+		t.Fatalf("chargeOnceTarget = %d, want 0 after a failed save", configured.chargeOnceTarget)
 	}
 }

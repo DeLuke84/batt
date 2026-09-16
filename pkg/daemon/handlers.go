@@ -737,6 +737,14 @@ func postCancelChargeOnce(c *gin.Context) {
 
 	target, err := cancelChargeOnce()
 	if err != nil {
+		// Only the missing one-time charge is the caller's fault; a failed save
+		// is ours.
+		if !errors.Is(err, ErrChargeOnceNotRunning) {
+			logrus.Errorf("saveConfig failed: %v", err)
+			c.IndentedJSON(http.StatusInternalServerError, err.Error())
+			_ = c.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		_ = c.AbortWithError(http.StatusBadRequest, err)
 		return

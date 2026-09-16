@@ -123,6 +123,10 @@ func cancelChargeOnce() (int, error) {
 
 	conf.ClearChargeOnceTarget()
 	if err := conf.Save(); err != nil {
+		// The file still holds the target, so keep it in memory too. Otherwise
+		// a retry reports that nothing is running while a restart resumes the
+		// one-time charge the user just cancelled.
+		conf.SetChargeOnceTarget(target)
 		return 0, err
 	}
 
