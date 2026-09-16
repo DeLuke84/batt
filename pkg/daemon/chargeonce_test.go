@@ -43,6 +43,13 @@ func useChargeOnceDaemonState(t *testing.T, configured *mockConf, phase calibrat
 	calibrationStatePath = ""
 }
 
+// The one-time charge routes, named so the tests below stay readable.
+const (
+	chargeOnceLimitPath  = "/charge-once/limit"
+	chargeOnceFullPath   = "/charge-once/full"
+	chargeOnceCancelPath = "/charge-once/cancel"
+)
+
 func postChargeOnce(path string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodPost, path, nil)
 	response := httptest.NewRecorder()
@@ -97,7 +104,7 @@ func TestStartChargeOnceToLimitInsideHysteresisGap(t *testing.T) {
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 	stubBatteryCharge(t, 58)
 
-	response := postChargeOnce("/charge-once/limit")
+	response := postChargeOnce(chargeOnceLimitPath)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body.String())
 	}
@@ -114,7 +121,7 @@ func TestStartChargeOnceToFullKeepsConfiguredLimit(t *testing.T) {
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 	stubBatteryCharge(t, 70)
 
-	response := postChargeOnce("/charge-once/full")
+	response := postChargeOnce(chargeOnceFullPath)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body.String())
 	}
@@ -139,28 +146,28 @@ func TestStartChargeOnceRejections(t *testing.T) {
 	}{
 		{
 			name:    "already at the target",
-			path:    "/charge-once/limit",
+			path:    chargeOnceLimitPath,
 			conf:    mockConf{upper: 70, lower: 40},
 			charge:  70,
 			wantErr: "already at 70%",
 		},
 		{
 			name:    "already full",
-			path:    "/charge-once/full",
+			path:    chargeOnceFullPath,
 			conf:    mockConf{upper: 70, lower: 68},
 			charge:  100,
 			wantErr: "already at 100%",
 		},
 		{
 			name:    "charge limit disabled",
-			path:    "/charge-once/full",
+			path:    chargeOnceFullPath,
 			conf:    mockConf{upper: 100, lower: 98},
 			charge:  50,
 			wantErr: "batt is not limiting charging",
 		},
 		{
 			name:    "calibration owns the charge limit",
-			path:    "/charge-once/limit",
+			path:    chargeOnceLimitPath,
 			conf:    mockConf{upper: 70, lower: 40},
 			phase:   calibration.PhaseCharge,
 			charge:  58,
@@ -168,14 +175,14 @@ func TestStartChargeOnceRejections(t *testing.T) {
 		},
 		{
 			name:    "temporary disable is pending",
-			path:    "/charge-once/full",
+			path:    chargeOnceFullPath,
 			conf:    mockConf{upper: 100, lower: 68, disableUntil: time.Now().Add(time.Hour), preDisableLimit: 70},
 			charge:  58,
 			wantErr: ErrTemporaryDisableInProgress.Error(),
 		},
 		{
 			name:    "one-time charge already running",
-			path:    "/charge-once/full",
+			path:    chargeOnceFullPath,
 			conf:    mockConf{upper: 70, lower: 68, chargeOnceTarget: 70},
 			charge:  58,
 			wantErr: ErrChargeOnceInProgress.Error(),
@@ -184,7 +191,7 @@ func TestStartChargeOnceRejections(t *testing.T) {
 			// Force discharge cuts the power the one-time charge needs, so it
 			// would sit there without making progress.
 			name:    "temporary adapter disable is pending",
-			path:    "/charge-once/limit",
+			path:    chargeOnceLimitPath,
 			conf:    mockConf{upper: 70, lower: 40, adapterDisableUntil: time.Now().Add(time.Hour)},
 			charge:  58,
 			wantErr: ErrTemporaryAdapterDisableInProgress.Error(),
@@ -220,7 +227,7 @@ func TestCancelChargeOnceRestoresConfiguredBehavior(t *testing.T) {
 	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100}
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 
-	response := postChargeOnce("/charge-once/cancel")
+	response := postChargeOnce(chargeOnceCancelPath)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body.String())
 	}
@@ -235,7 +242,7 @@ func TestCancelChargeOnceRestoresConfiguredBehavior(t *testing.T) {
 func TestCancelChargeOnceWithoutSession(t *testing.T) {
 	useChargeOnceDaemonState(t, &mockConf{upper: 70, lower: 40}, calibration.PhaseIdle)
 
-	response := postChargeOnce("/charge-once/cancel")
+	response := postChargeOnce(chargeOnceCancelPath)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
@@ -594,7 +601,7 @@ func TestCancelChargeOnceKeepsTheTargetWhenSaveFails(t *testing.T) {
 	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100, saveErr: errors.New("disk full")}
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 
-	response := postChargeOnce("/charge-once/cancel")
+	response := postChargeOnce(chargeOnceCancelPath)
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusInternalServerError, response.Body.String())
 	}
@@ -604,7 +611,7 @@ func TestCancelChargeOnceKeepsTheTargetWhenSaveFails(t *testing.T) {
 
 	// The retry after a working disk cancels as usual.
 	configured.saveErr = nil
-	response = postChargeOnce("/charge-once/cancel")
+	response = postChargeOnce(chargeOnceCancelPath)
 	if response.Code != http.StatusOK {
 		t.Fatalf("retry status = %d, want %d; body: %s", response.Code, http.StatusOK, response.Body.String())
 	}
@@ -618,7 +625,7 @@ func TestStartChargeOnceKeepsNoTargetWhenSaveFails(t *testing.T) {
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 	stubBatteryCharge(t, 58)
 
-	response := postChargeOnce("/charge-once/limit")
+	response := postChargeOnce(chargeOnceLimitPath)
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusInternalServerError, response.Body.String())
 	}
@@ -716,7 +723,7 @@ func TestStartChargeOnceWithAHandEditedLimit(t *testing.T) {
 	calibrationStatePath = ""
 	stubBatteryCharge(t, 3)
 
-	for _, path := range []string{"/charge-once/limit", "/charge-once/full"} {
+	for _, path := range []string{chargeOnceLimitPath, chargeOnceFullPath} {
 		response := postChargeOnce(path)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s status = %d, want %d; body: %s", path, response.Code, http.StatusBadRequest, response.Body.String())
