@@ -301,9 +301,14 @@ func TestCompleteChargeOnce(t *testing.T) {
 			if phase == "" {
 				phase = calibration.PhaseIdle
 			}
-			previousState := calibrationState
-			t.Cleanup(func() { calibrationState = previousState })
+			previousState, previousCapabilities := calibrationState, capabilities
+			t.Cleanup(func() { calibrationState, capabilities = previousState, previousCapabilities })
 			calibrationState = &calibration.State{Phase: phase}
+			// The completion charge depends on the backend, so name it.
+			capabilities = compatibility.Capabilities{
+				ChargingControl:   true,
+				ChargeControlMode: compatibility.ChargeControlLegacy,
+			}
 			stubBatteryCharge(t, tt.charge)
 
 			configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: tt.target}
@@ -408,7 +413,9 @@ func TestLegacyMaintainLoopRespectsChargeOnceTarget(t *testing.T) {
 	}
 }
 
-func TestFirmwareMaintainLoopAppliesChargeOnceBand(t *testing.T) {
+// firmwareChargeMock builds an SMC mock for the firmware charge-control backend.
+func firmwareChargeMock(t *testing.T) *smc.AppleSMC {
+	t.Helper()
 	value := func(key string, dataType gosmc.DataType, data ...byte) gosmc.Value {
 		v, err := gosmc.NewValue(key, dataType, data)
 		if err != nil {
@@ -426,7 +433,11 @@ func TestFirmwareMaintainLoopAppliesChargeOnceBand(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mock.Close() })
+	return mock
+}
 
+func useFirmwareLoopState(t *testing.T, mock *smc.AppleSMC, configured *mockConf) {
+	t.Helper()
 	previousSMC, previousConf, previousCapabilities := smcConn, conf, capabilities
 	previousState := calibrationState
 	t.Cleanup(func() {
@@ -434,13 +445,18 @@ func TestFirmwareMaintainLoopAppliesChargeOnceBand(t *testing.T) {
 		calibrationState = previousState
 	})
 	smcConn = mock
-	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 70}
 	conf = configured
 	calibrationState = &calibration.State{Phase: calibration.PhaseIdle}
 	capabilities = compatibility.Capabilities{
 		ChargingControl:   true,
 		ChargeControlMode: compatibility.ChargeControlFirmware,
 	}
+}
+
+func TestFirmwareMaintainLoopAppliesChargeOnceBand(t *testing.T) {
+	mock := firmwareChargeMock(t)
+	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 70}
+	useFirmwareLoopState(t, mock, configured)
 
 	// The firmware API rejects lower >= upper, so a one-time charge to the
 	// configured limit uses the narrowest legal band below it.
@@ -479,5 +495,78 @@ func TestFirmwareMaintainLoopAppliesChargeOnceBand(t *testing.T) {
 	}
 	if !state.Active || state.Lower != 40 || state.Upper != 70 {
 		t.Fatalf("firmware state = %+v, want active 40/70", state)
+	}
+}
+
+func TestChargeOnceReachedTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		mode   compatibility.ChargeControlMode
+		target int
+		charge int
+		want   bool
+	}{
+		{name: "legacy stops at the target", mode: compatibility.ChargeControlLegacy, target: 80, charge: 80, want: true},
+		{name: "legacy does not accept one percent short", mode: compatibility.ChargeControlLegacy, target: 80, charge: 79},
+		// The firmware band for a one-time charge to 80% is 79/80, and the
+		// firmware never resumes charging at 79%.
+		{name: "firmware accepts the top of its band", mode: compatibility.ChargeControlFirmware, target: 80, charge: 79, want: true},
+		{name: "firmware keeps charging below the band", mode: compatibility.ChargeControlFirmware, target: 80, charge: 78},
+		// A one-time charge to 100% deactivates the limit instead of narrowing
+		// the band, so it has no percent to give away.
+		{name: "firmware charge to full needs 100%", mode: compatibility.ChargeControlFirmware, target: 100, charge: 99},
+		{name: "firmware charge to full reached", mode: compatibility.ChargeControlFirmware, target: 100, charge: 100, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := capabilities
+			t.Cleanup(func() { capabilities = previous })
+			capabilities = compatibility.Capabilities{ChargingControl: true, ChargeControlMode: tt.mode}
+
+			if got := chargeOnceReachedTarget(tt.target, tt.charge); got != tt.want {
+				t.Fatalf("chargeOnceReachedTarget(%d, %d) = %v, want %v", tt.target, tt.charge, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFirmwareChargeOnceCompletesAtTheTopOfItsBand(t *testing.T) {
+	// A one-time charge to the 80% limit started at 79% cannot move: the
+	// firmware only resumes charging below the lower bound of the 79/80 band it
+	// gets. It must still end and hand the configured band back.
+	mock := firmwareChargeMock(t)
+	configured := &mockConf{upper: 80, lower: 78, chargeOnceTarget: 80}
+	useFirmwareLoopState(t, mock, configured)
+	stubBatteryCharge(t, 79)
+
+	if !maintainLoopForced() {
+		t.Fatal("firmware maintain loop failed")
+	}
+	state, err := mock.GetFirmwareChargeLimit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Active || state.Lower != 79 || state.Upper != 80 {
+		t.Fatalf("firmware state = %+v, want active 79/80", state)
+	}
+
+	if !completeChargeOnce(configured) {
+		t.Fatal("completeChargeOnce() = false, want true at the top of the one-time band")
+	}
+	if configured.chargeOnceTarget != 0 {
+		t.Fatalf("chargeOnceTarget = %d, want 0", configured.chargeOnceTarget)
+	}
+
+	// The configured band applies again, so the persistent limit is restored.
+	if !maintainLoopForced() {
+		t.Fatal("firmware maintain loop failed")
+	}
+	state, err = mock.GetFirmwareChargeLimit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Active || state.Lower != 78 || state.Upper != 80 {
+		t.Fatalf("firmware state = %+v, want active 78/80", state)
 	}
 }

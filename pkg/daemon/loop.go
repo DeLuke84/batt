@@ -461,7 +461,8 @@ func maintainFirmwareChargeLimit() bool {
 // maintainFirmwareChargeOnce hands the firmware a band that charges to the
 // one-time target instead of the configured band. The firmware API rejects
 // lower >= upper, so the band is the narrowest legal one. A battery sitting
-// exactly at target-1 may therefore stop one percent short of the target.
+// exactly at target-1 therefore never starts charging, which is why
+// chargeOnceReachedTarget ends a firmware one-time charge there.
 func maintainFirmwareChargeOnce(target int) bool {
 	maintainedChargingInProgress = false
 

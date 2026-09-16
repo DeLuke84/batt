@@ -7,6 +7,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/charlie0129/batt/pkg/compatibility"
 	"github.com/charlie0129/batt/pkg/config"
 	"github.com/charlie0129/batt/pkg/events"
 )
@@ -66,6 +67,23 @@ func activeChargeOnceTarget() int {
 		return 0
 	}
 	return conf.ChargeOnceTarget()
+}
+
+// chargeOnceReachedTarget reports whether charge ends a one-time charge to
+// target.
+//
+// The firmware API rejects lower >= upper, so the firmware backend drives a
+// one-time charge below 100% with the narrowest legal band, target-1/target.
+// The firmware resumes charging below the lower bound, so a battery sitting at
+// target-1 never moves. Accepting target-1 as reached keeps that case from
+// holding the narrowed band forever, which would also block a scheduled
+// calibration. The price is that a firmware one-time charge can end one percent
+// short of its target.
+func chargeOnceReachedTarget(target, charge int) bool {
+	if target < 100 && capabilities.ChargeControlMode == compatibility.ChargeControlFirmware {
+		return charge >= target-1
+	}
+	return charge >= target
 }
 
 // chargeOnceStartedMessage describes what the daemon just started doing.
@@ -159,7 +177,7 @@ func completeChargeOnce(conf config.Config) bool {
 		logrus.WithError(err).Error("failed to read battery charge for the one-time charge")
 		return false
 	}
-	if charge < target {
+	if !chargeOnceReachedTarget(target, charge) {
 		return false
 	}
 
