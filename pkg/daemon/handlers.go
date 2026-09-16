@@ -703,6 +703,14 @@ func startChargeOnceRequest(c *gin.Context, full bool) {
 	// Conflicts come first: a pending temporary disable also reads as a
 	// disabled charge limit, and naming the conflict tells the user what to do.
 	if err := chargeOnceConflict(conf); err != nil {
+		// A conflict is the caller's to resolve. A failed check is ours.
+		var checkErr *chargeOnceCheckError
+		if errors.As(err, &checkErr) {
+			logrus.Errorf("chargeOnceConflict failed: %v", err)
+			c.IndentedJSON(http.StatusInternalServerError, err.Error())
+			_ = c.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		_ = c.AbortWithError(http.StatusBadRequest, err)
 		return
@@ -723,8 +731,10 @@ func startChargeOnceRequest(c *gin.Context, full bool) {
 		return
 	}
 
-	if charge >= target {
-		err := fmt.Errorf("battery is already at %d%%, which is at or above the %d%% target", charge, target)
+	// Admission asks the same question completion does, so a charge the next
+	// maintain loop would end right away is refused instead of started.
+	if chargeOnceReachedTarget(target, charge) {
+		err := fmt.Errorf("battery is already at %d%%, so a one-time charge to %d%% would end immediately", charge, target)
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		_ = c.AbortWithError(http.StatusBadRequest, err)
 		return

@@ -31,6 +31,7 @@ var (
 	ErrChargeOnceNotRunning = errors.New("no one-time charge is in progress")
 	ErrChargeLimitDisabled  = errors.New("batt is not limiting charging, so a one-time charge would have no effect. Set a limit first with 'batt limit <percentage>'")
 	ErrChargeLimitTooLow    = errors.New("the configured charge limit is below 10%, which batt does not support. Set a valid limit with 'batt limit <percentage>'")
+	ErrAdapterDisabled      = errors.New("the power adapter is disabled, so a one-time charge would make no progress. Enable it first with 'batt adapter enable'")
 )
 
 // resolveChargeOnceTarget returns the charge percentage a one-time charge aims
@@ -67,8 +68,28 @@ func chargeOnceConflict(conf config.Config) error {
 	if conf.ChargeOnceTarget() != 0 {
 		return ErrChargeOnceInProgress
 	}
+	// "batt adapter disable" cuts the same power and writes no deadline, so the
+	// config holds no trace of it. Only the hardware knows, and asking it comes
+	// last because every check above answers from the config alone.
+	if capabilities.AdapterControl {
+		enabled, err := smcIsAdapterEnabled()
+		if err != nil {
+			return &chargeOnceCheckError{fmt.Errorf("failed to read the power adapter state: %w", err)}
+		}
+		if !enabled {
+			return ErrAdapterDisabled
+		}
+	}
 	return nil
 }
+
+// chargeOnceCheckError marks a conflict that could not be decided because a
+// check itself failed. The daemon failed, not the caller, so the request
+// answers with a server error instead of a rejection.
+type chargeOnceCheckError struct{ err error }
+
+func (e *chargeOnceCheckError) Error() string { return e.err.Error() }
+func (e *chargeOnceCheckError) Unwrap() error { return e.err }
 
 // activeChargeOnceTarget returns the target of a running one-time charge, or 0.
 // Calibration writes the charge limit itself, so a one-time charge persisted

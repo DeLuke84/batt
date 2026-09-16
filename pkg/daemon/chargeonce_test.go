@@ -737,3 +737,200 @@ func TestStartChargeOnceWithAHandEditedLimit(t *testing.T) {
 		}
 	}
 }
+
+// stubAdapterEnabled replaces the adapter-state test seam for one test and
+// reports whether the seam was read.
+func stubAdapterEnabled(t *testing.T, enabled bool, err error) *bool {
+	t.Helper()
+	previous := smcIsAdapterEnabled
+	t.Cleanup(func() { smcIsAdapterEnabled = previous })
+	asked := false
+	smcIsAdapterEnabled = func() (bool, error) {
+		asked = true
+		return enabled, err
+	}
+	return &asked
+}
+
+func TestStartChargeOnceChecksThePowerAdapter(t *testing.T) {
+	// "batt adapter disable" cuts the power a one-time charge needs and writes
+	// no deadline that could restore it, so the config alone cannot see it.
+	tests := []struct {
+		name                string
+		path                string
+		adapterControl      bool
+		adapterEnabled      bool
+		adapterErr          error
+		adapterDisableUntil time.Time
+		wantCode            int
+		wantBody            string
+		wantTarget          int
+		wantAsked           bool
+	}{
+		{
+			name:           "disabled indefinitely",
+			adapterControl: true,
+			wantCode:       http.StatusBadRequest,
+			wantBody:       ErrAdapterDisabled.Error(),
+			wantAsked:      true,
+		},
+		{
+			name:           "disabled indefinitely, full requested",
+			path:           chargeOnceFullPath,
+			adapterControl: true,
+			wantCode:       http.StatusBadRequest,
+			wantBody:       ErrAdapterDisabled.Error(),
+			wantAsked:      true,
+		},
+		{
+			// A failed read is the daemon's fault, not the caller's, and it
+			// must not admit a charge that may be unable to progress.
+			name:           "adapter state unreadable",
+			adapterControl: true,
+			adapterEnabled: true,
+			adapterErr:     errors.New("smc read failed"),
+			wantCode:       http.StatusInternalServerError,
+			wantBody:       "smc read failed",
+			wantAsked:      true,
+		},
+		{
+			name:           "adapter enabled",
+			adapterControl: true,
+			adapterEnabled: true,
+			wantCode:       http.StatusCreated,
+			wantTarget:     70,
+			wantAsked:      true,
+		},
+		{
+			// A temporary disable names its own deadline, so it keeps its
+			// message and never reaches the hardware read.
+			name:                "temporary disable is pending",
+			adapterControl:      true,
+			adapterDisableUntil: time.Now().Add(time.Hour),
+			wantCode:            http.StatusBadRequest,
+			wantBody:            ErrTemporaryAdapterDisableInProgress.Error(),
+		},
+		{
+			// Hardware without adapter control cannot have its power cut, so
+			// the admission never asks.
+			name:       "hardware without adapter control",
+			wantCode:   http.StatusCreated,
+			wantTarget: 70,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.path
+			if path == "" {
+				path = chargeOnceLimitPath
+			}
+			configured := &mockConf{upper: 70, lower: 40, adapterDisableUntil: tt.adapterDisableUntil}
+			useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+			capabilities = compatibility.Capabilities{ChargingControl: true, AdapterControl: tt.adapterControl}
+			stubBatteryCharge(t, 58)
+			asked := stubAdapterEnabled(t, tt.adapterEnabled, tt.adapterErr)
+
+			response := postChargeOnce(path)
+			if response.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", response.Code, tt.wantCode, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), tt.wantBody) {
+				t.Fatalf("response does not explain the outcome: %s", response.Body.String())
+			}
+			if configured.chargeOnceTarget != tt.wantTarget {
+				t.Fatalf("chargeOnceTarget = %d, want %d", configured.chargeOnceTarget, tt.wantTarget)
+			}
+			if *asked != tt.wantAsked {
+				t.Fatalf("read the power adapter state = %v, want %v", *asked, tt.wantAsked)
+			}
+		})
+	}
+}
+
+func TestChargeOnceConflictKeepsTheAdapterReadError(t *testing.T) {
+	// The request answers with a server error, so the cause has to survive for
+	// the log line and for anyone matching on it.
+	configured := &mockConf{upper: 70, lower: 40}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	capabilities = compatibility.Capabilities{ChargingControl: true, AdapterControl: true}
+	readErr := errors.New("smc read failed")
+	stubAdapterEnabled(t, true, readErr)
+
+	err := chargeOnceConflict(configured)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("conflict error = %v, want it to wrap %v", err, readErr)
+	}
+}
+
+func TestStartChargeOnceRejectsATargetAlreadyReached(t *testing.T) {
+	// The firmware drives a one-time charge below 100% with the narrowest legal
+	// band, target-1/target, and does not resume charging at target-1. Starting
+	// there would create a one-time charge that the next maintain loop ends
+	// right away, so admission asks the same question as completion.
+	tests := []struct {
+		name       string
+		mode       compatibility.ChargeControlMode
+		path       string
+		charge     int
+		wantCode   int
+		wantBody   string
+		wantTarget int
+	}{
+		{
+			name:     "firmware one percent below the limit",
+			mode:     compatibility.ChargeControlFirmware,
+			path:     chargeOnceLimitPath,
+			charge:   79,
+			wantCode: http.StatusBadRequest,
+			wantBody: "already at 79%",
+		},
+		{
+			name:       "legacy one percent below the limit",
+			mode:       compatibility.ChargeControlLegacy,
+			path:       chargeOnceLimitPath,
+			charge:     79,
+			wantCode:   http.StatusCreated,
+			wantTarget: 80,
+		},
+		{
+			// A one-time charge to 100% deactivates the limit instead of
+			// narrowing a band, so it has no percent to give away.
+			name:       "firmware one percent below full",
+			mode:       compatibility.ChargeControlFirmware,
+			path:       chargeOnceFullPath,
+			charge:     99,
+			wantCode:   http.StatusCreated,
+			wantTarget: 100,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configured := &mockConf{upper: 80, lower: 78}
+			useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+			capabilities = compatibility.Capabilities{ChargingControl: true, ChargeControlMode: tt.mode}
+			stubBatteryCharge(t, tt.charge)
+			// An admitted one-time charge runs the maintain loop right away, so
+			// the backend under test needs its SMC mock.
+			previousSMC := smcConn
+			t.Cleanup(func() { smcConn = previousSMC })
+			if tt.mode == compatibility.ChargeControlFirmware {
+				smcConn = firmwareChargeMock(t)
+			} else {
+				smcConn = legacyChargeMock(t, tt.charge, false)
+			}
+
+			response := postChargeOnce(tt.path)
+			if response.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", response.Code, tt.wantCode, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), tt.wantBody) {
+				t.Fatalf("response does not explain the outcome: %s", response.Body.String())
+			}
+			if configured.chargeOnceTarget != tt.wantTarget {
+				t.Fatalf("chargeOnceTarget = %d, want %d", configured.chargeOnceTarget, tt.wantTarget)
+			}
+		})
+	}
+}
