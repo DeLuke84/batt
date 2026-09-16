@@ -53,6 +53,11 @@ func chargeOnceConflict(conf config.Config) error {
 	if !conf.DisableUntil().IsZero() {
 		return ErrTemporaryDisableInProgress
 	}
+	// A temporarily disabled power adapter cuts the power a one-time charge
+	// needs, so the charge would silently make no progress.
+	if !conf.AdapterDisableUntil().IsZero() {
+		return ErrTemporaryAdapterDisableInProgress
+	}
 	if conf.ChargeOnceTarget() != 0 {
 		return ErrChargeOnceInProgress
 	}

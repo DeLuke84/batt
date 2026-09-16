@@ -45,14 +45,15 @@ func TestCalibrationAndTemporaryDisableMenuExclusion(t *testing.T) {
 
 func TestChargeOnceMenuAvailability(t *testing.T) {
 	tests := []struct {
-		name             string
-		phase            calibration.Phase
-		disableScheduled bool
-		chargeOnceTarget int
-		upperLimit       int
-		currentCharge    int
-		wantLimit        bool
-		wantFull         bool
+		name                    string
+		phase                   calibration.Phase
+		disableScheduled        bool
+		adapterDisableScheduled bool
+		chargeOnceTarget        int
+		upperLimit              int
+		currentCharge           int
+		wantLimit               bool
+		wantFull                bool
 	}{
 		{
 			name: "inside the hysteresis gap", upperLimit: 70, currentCharge: 58,
@@ -89,6 +90,12 @@ func TestChargeOnceMenuAvailability(t *testing.T) {
 			name: "temporary disable is scheduled", disableScheduled: true,
 			upperLimit: 70, currentCharge: 58, wantLimit: false, wantFull: false,
 		},
+		{
+			// Force discharge cuts the power the one-time charge needs, so the
+			// daemon rejects it. The menu must not offer it either.
+			name: "force discharge is scheduled", adapterDisableScheduled: true,
+			upperLimit: 70, currentCharge: 58, wantLimit: false, wantFull: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -98,13 +105,40 @@ func TestChargeOnceMenuAvailability(t *testing.T) {
 				phase = calibration.PhaseIdle
 			}
 
-			got := canChargeOnceToLimit(phase, tt.disableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
+			got := canChargeOnceToLimit(phase, tt.disableScheduled, tt.adapterDisableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
 			if got != tt.wantLimit {
 				t.Errorf("canChargeOnceToLimit() = %v, want %v", got, tt.wantLimit)
 			}
-			got = canChargeOnceToFull(phase, tt.disableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
+			got = canChargeOnceToFull(phase, tt.disableScheduled, tt.adapterDisableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
 			if got != tt.wantFull {
 				t.Errorf("canChargeOnceToFull() = %v, want %v", got, tt.wantFull)
+			}
+		})
+	}
+}
+
+func TestForceDischargeMenuAvailability(t *testing.T) {
+	tests := []struct {
+		name                    string
+		phase                   calibration.Phase
+		adapterDisableScheduled bool
+		chargeOnceTarget        int
+		want                    bool
+	}{
+		{name: "available while idle", phase: calibration.PhaseIdle, want: true},
+		{name: "calibration owns the adapter", phase: calibration.PhaseCharge},
+		{name: "already scheduled", phase: calibration.PhaseIdle, adapterDisableScheduled: true},
+		{
+			// The daemon rejects cutting power while a one-time charge runs,
+			// because the charge would never finish.
+			name: "one-time charge is running", phase: calibration.PhaseIdle, chargeOnceTarget: 100,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canStartForceDischarge(tt.phase, tt.adapterDisableScheduled, tt.chargeOnceTarget); got != tt.want {
+				t.Errorf("canStartForceDischarge() = %v, want %v", got, tt.want)
 			}
 		})
 	}

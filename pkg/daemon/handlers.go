@@ -282,6 +282,15 @@ func setAdapter(c *gin.Context) {
 		return
 	}
 
+	// Cutting power stops a one-time charge from making any progress, and an
+	// indefinite adapter disable records no deadline that could resume it.
+	if !d && conf.ChargeOnceTarget() != 0 {
+		err := ErrChargeOnceInProgress
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+
 	if d {
 		if err := smcEnableAdapter(); err != nil {
 			logrus.Errorf("enablePowerAdapter failed: %v", err)
@@ -341,6 +350,14 @@ func setAdapterDisableFor(c *gin.Context) {
 
 	if calibrationOwnsChargeLimit() {
 		err := ErrCalibrationControlsAdapter
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+
+	// Cutting power stops a one-time charge from making any progress.
+	if conf.ChargeOnceTarget() != 0 {
+		err := ErrChargeOnceInProgress
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		_ = c.AbortWithError(http.StatusBadRequest, err)
 		return

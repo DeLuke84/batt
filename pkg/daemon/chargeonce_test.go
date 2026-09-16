@@ -174,6 +174,15 @@ func TestStartChargeOnceRejections(t *testing.T) {
 			charge:  58,
 			wantErr: ErrChargeOnceInProgress.Error(),
 		},
+		{
+			// Force discharge cuts the power the one-time charge needs, so it
+			// would sit there without making progress.
+			name:    "temporary adapter disable is pending",
+			path:    "/charge-once/limit",
+			conf:    mockConf{upper: 70, lower: 40, adapterDisableUntil: time.Now().Add(time.Hour)},
+			charge:  58,
+			wantErr: ErrTemporaryAdapterDisableInProgress.Error(),
+		},
 	}
 
 	for _, tt := range tests {
@@ -609,5 +618,74 @@ func TestStartChargeOnceKeepsNoTargetWhenSaveFails(t *testing.T) {
 	}
 	if configured.chargeOnceTarget != 0 {
 		t.Fatalf("chargeOnceTarget = %d, want 0 after a failed save", configured.chargeOnceTarget)
+	}
+}
+
+func TestForceDischargeRejectsChargeOnce(t *testing.T) {
+	// The other half of the conflict: a one-time charge that is already running
+	// must not be left charging against a disabled power adapter.
+	tests := []struct {
+		name string
+		body string
+		path string
+	}{
+		{name: "indefinitely", path: "/adapter", body: "false"},
+		{name: "for a duration", path: "/adapter/disable", body: `"1h0m0s"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previousDisable := smcDisableAdapter
+			t.Cleanup(func() { smcDisableAdapter = previousDisable })
+			called := false
+			smcDisableAdapter = func() error {
+				called = true
+				return nil
+			}
+
+			configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100}
+			useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+			capabilities = compatibility.Capabilities{ChargingControl: true, AdapterControl: true}
+
+			request := httptest.NewRequest(http.MethodPut, tt.path, strings.NewReader(tt.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			setupRoutes().ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), ErrChargeOnceInProgress.Error()) {
+				t.Fatalf("response does not explain the conflict: %s", response.Body.String())
+			}
+			if called {
+				t.Fatal("rejected force discharge still cut power")
+			}
+			if configured.chargeOnceTarget != 100 || !configured.adapterDisableUntil.IsZero() {
+				t.Fatalf("rejected force discharge changed state: %+v", configured)
+			}
+		})
+	}
+}
+
+func TestEnablingTheAdapterKeepsChargeOnce(t *testing.T) {
+	previousEnable := smcEnableAdapter
+	t.Cleanup(func() { smcEnableAdapter = previousEnable })
+	smcEnableAdapter = func() error { return nil }
+
+	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	capabilities = compatibility.Capabilities{ChargingControl: true, AdapterControl: true}
+
+	request := httptest.NewRequest(http.MethodPut, "/adapter", strings.NewReader("true"))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	setupRoutes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	if configured.chargeOnceTarget != 100 {
+		t.Fatalf("chargeOnceTarget = %d, want 100", configured.chargeOnceTarget)
 	}
 }

@@ -184,6 +184,8 @@ Charge the battery once without changing your charge limit.
 
 Your charge limit and lower-limit delta stay as they are, so normal behavior resumes by itself. A one-time charge survives a daemon restart and a reboot. Setting a limit with `batt limit` cancels it too. `batt status` shows a running one-time charge.
 
+A one-time charge and a disabled power adapter exclude each other, because cutting power stops the charge. `batt` refuses to start one while the other is active and names the conflict.
+
 On `20xxx` firmware, `batt charge now` hands the firmware the narrowest range that ends at your limit, and the firmware does not start charging from the top of that range. A one-time charge to the limit can therefore finish one percent short of it. `batt charge full` is exact, because it deactivates the limit instead of narrowing it.
 
 The GUI exposes the same actions in the menubar as **Charge to 70% Now** and **Charge to Full Once**, with the current progress and a **Cancel One-Time Charge** item while one is running.
