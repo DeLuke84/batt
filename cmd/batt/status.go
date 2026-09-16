@@ -242,6 +242,9 @@ func NewStatusCommand() *cobra.Command {
 					cmd.Printf("  Restoring %d%% limit: %s\n", cfg.PreDisableLimit(), bold("in %s (%s)", formatRestoreDelay(time.Until(until)), until.Local().Format(time.DateTime)))
 				}
 			}
+			if target := cfg.ChargeOnceTarget(); target > 0 {
+				cmd.Printf("  One-time charge: %s\n", bold("to %d%% (now %d%%)", target, data.currentCharge))
+			}
 			if data.capabilities.SleepHooks {
 				cmd.Printf("  Prevent idle-sleep when charging: %s\n", bool2Text(cfg.PreventIdleSleep()))
 				cmd.Printf("  Disable charging before sleep if charge limit is enabled: %s\n", bool2Text(cfg.DisableChargingPreSleep()))
