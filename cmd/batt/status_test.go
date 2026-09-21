@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charlie0129/batt/pkg/compatibility"
 	"github.com/charlie0129/batt/pkg/config"
 	"github.com/charlie0129/batt/pkg/powerinfo"
 	"github.com/charlie0129/batt/pkg/utils/ptr"
@@ -130,6 +131,7 @@ func TestChargingNarration(t *testing.T) {
 		currentCharge    int
 		limit            int
 		chargeOnceTarget int
+		adapterControl   bool
 		want             string
 	}{
 		{
@@ -149,8 +151,12 @@ func TestChargingNarration(t *testing.T) {
 			want: "Your Mac will not charge, because your current charge is above the lower limit. Charging will be allowed after current charge drops below the lower limit.",
 		},
 		{
-			name: "below the lower limit with the adapter off", pluggedIn: true, currentCharge: 50, limit: 80,
+			name: "below the lower limit with the adapter off", pluggedIn: true, currentCharge: 50, limit: 80, adapterControl: true,
 			want: "Your Mac will not charge, because adapter is disabled.",
+		},
+		{
+			name: "below the lower limit without adapter control", pluggedIn: true, currentCharge: 50, limit: 80,
+			want: "Your Mac will not charge",
 		},
 		{
 			name: "batt is not limiting charging", pluggedIn: true, adapter: true, currentCharge: 50, limit: 100,
@@ -161,8 +167,12 @@ func TestChargingNarration(t *testing.T) {
 			want: "Your Mac will charge to 100% once, starting with the next refresh.",
 		},
 		{
-			name: "a one-time charge against a disabled adapter", pluggedIn: true, currentCharge: 50, limit: 80, chargeOnceTarget: 100,
+			name: "a one-time charge against a disabled adapter", pluggedIn: true, currentCharge: 50, limit: 80, chargeOnceTarget: 100, adapterControl: true,
 			want: "Your Mac will not charge to its 100% one-time target, because adapter is disabled.",
+		},
+		{
+			name: "a one-time charge without adapter control", pluggedIn: true, currentCharge: 50, limit: 80, chargeOnceTarget: 100,
+			want: "Your Mac will charge to 100% once, starting with the next refresh.",
 		},
 	}
 
@@ -174,6 +184,7 @@ func TestChargingNarration(t *testing.T) {
 				adapter:       tt.adapter,
 				currentCharge: tt.currentCharge,
 				batteryInfo:   chargingBattery(),
+				capabilities:  compatibility.Capabilities{AdapterControl: tt.adapterControl},
 			}
 			if got := chargingNarration(data, statusConfig(tt.limit, 2, tt.chargeOnceTarget)); got != tt.want {
 				t.Fatalf("chargingNarration() = %q, want %q", got, tt.want)

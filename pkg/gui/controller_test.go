@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/charlie0129/batt/pkg/calibration"
+	"github.com/charlie0129/batt/pkg/compatibility"
 )
 
 func TestCalibrationAndTemporaryDisableMenuExclusion(t *testing.T) {
@@ -52,6 +53,10 @@ func TestChargeOnceMenuAvailability(t *testing.T) {
 		chargeOnceTarget        int
 		upperLimit              int
 		currentCharge           int
+		chargeControlMode       compatibility.ChargeControlMode
+		adapterControl          bool
+		adapterKnown            bool
+		adapterEnabled          bool
 		wantLimit               bool
 		wantFull                bool
 	}{
@@ -96,6 +101,26 @@ func TestChargeOnceMenuAvailability(t *testing.T) {
 			name: "force discharge is scheduled", adapterDisableScheduled: true,
 			upperLimit: 70, currentCharge: 58, wantLimit: false, wantFull: false,
 		},
+		{
+			name: "adapter control is supported and enabled", upperLimit: 80, currentCharge: 78,
+			adapterControl: true, adapterKnown: true, adapterEnabled: true, wantLimit: true, wantFull: true,
+		},
+		{
+			name: "adapter control is supported and disabled", upperLimit: 80, currentCharge: 78,
+			adapterControl: true, adapterKnown: true, wantLimit: false, wantFull: false,
+		},
+		{
+			name: "adapter control state is not known", upperLimit: 80, currentCharge: 78,
+			adapterControl: true, wantLimit: false, wantFull: false,
+		},
+		{
+			name: "firmware target is reached at target minus one", upperLimit: 80, currentCharge: 79,
+			chargeControlMode: compatibility.ChargeControlFirmware, wantLimit: false, wantFull: true,
+		},
+		{
+			name: "legacy target is not reached at target minus one", upperLimit: 80, currentCharge: 79,
+			chargeControlMode: compatibility.ChargeControlLegacy, wantLimit: true, wantFull: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -105,11 +130,18 @@ func TestChargeOnceMenuAvailability(t *testing.T) {
 				phase = calibration.PhaseIdle
 			}
 
-			got := canChargeOnceToLimit(phase, tt.disableScheduled, tt.adapterDisableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
+			got := canChargeOnceToLimit(
+				phase, tt.disableScheduled, tt.adapterDisableScheduled, tt.chargeOnceTarget,
+				tt.upperLimit, tt.currentCharge, tt.chargeControlMode,
+				tt.adapterControl, tt.adapterKnown, tt.adapterEnabled,
+			)
 			if got != tt.wantLimit {
 				t.Errorf("canChargeOnceToLimit() = %v, want %v", got, tt.wantLimit)
 			}
-			got = canChargeOnceToFull(phase, tt.disableScheduled, tt.adapterDisableScheduled, tt.chargeOnceTarget, tt.upperLimit, tt.currentCharge)
+			got = canChargeOnceToFull(
+				phase, tt.disableScheduled, tt.adapterDisableScheduled, tt.chargeOnceTarget,
+				tt.upperLimit, tt.currentCharge, tt.adapterControl, tt.adapterKnown, tt.adapterEnabled,
+			)
 			if got != tt.wantFull {
 				t.Errorf("canChargeOnceToFull() = %v, want %v", got, tt.wantFull)
 			}

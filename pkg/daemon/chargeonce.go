@@ -219,7 +219,11 @@ func completeChargeOnce(conf config.Config) bool {
 
 	conf.ClearChargeOnceTarget()
 	if err := conf.Save(); err != nil {
+		// The file still holds the target. Keep memory consistent with it so the
+		// next loop retries completion instead of reporting a false success.
+		conf.SetChargeOnceTarget(target)
 		logrus.Errorf("saveConfig failed: %v", err)
+		return false
 	}
 
 	logrus.WithFields(logrus.Fields{

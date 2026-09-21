@@ -86,7 +86,7 @@ func chargingNarration(data *statusData, cfg *config.File) string {
 	// A one-time charge ignores the lower limit until it reaches its target, so
 	// the hysteresis explanation below would contradict what batt is doing.
 	if target := cfg.ChargeOnceTarget(); target > 0 {
-		if data.pluggedIn && !data.adapter {
+		if data.capabilities.AdapterControl && data.pluggedIn && !data.adapter {
 			return fmt.Sprintf("Your Mac will not charge to its %d%% one-time target, because adapter is disabled.", target)
 		}
 		return fmt.Sprintf("Your Mac will charge to %d%% once, starting with the next refresh.", target)
@@ -100,7 +100,7 @@ func chargingNarration(data *statusData, cfg *config.File) string {
 	case data.currentCharge >= low:
 		sentence += ", because your current charge is above the lower limit. Charging will be allowed after current charge drops below the lower limit."
 	}
-	if data.pluggedIn && data.currentCharge < low && !data.adapter {
+	if data.capabilities.AdapterControl && data.pluggedIn && data.currentCharge < low && !data.adapter {
 		sentence += ", because adapter is disabled."
 	}
 	return sentence

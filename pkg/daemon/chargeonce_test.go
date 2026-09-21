@@ -594,6 +594,28 @@ func TestFirmwareChargeOnceCompletesAtTheTopOfItsBand(t *testing.T) {
 	}
 }
 
+func TestCompleteChargeOnceKeepsTheTargetWhenSaveFails(t *testing.T) {
+	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 70, saveErr: errors.New("disk full")}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	capabilities.ChargeControlMode = compatibility.ChargeControlLegacy
+	stubBatteryCharge(t, 70)
+
+	if completeChargeOnce(configured) {
+		t.Fatal("completeChargeOnce() = true after a failed save, want false")
+	}
+	if configured.chargeOnceTarget != 70 {
+		t.Fatalf("chargeOnceTarget = %d, want 70 after a failed save", configured.chargeOnceTarget)
+	}
+
+	configured.saveErr = nil
+	if !completeChargeOnce(configured) {
+		t.Fatal("completeChargeOnce() retry = false, want true")
+	}
+	if configured.chargeOnceTarget != 0 {
+		t.Fatalf("chargeOnceTarget = %d, want 0 after a successful retry", configured.chargeOnceTarget)
+	}
+}
+
 func TestCancelChargeOnceKeepsTheTargetWhenSaveFails(t *testing.T) {
 	// The config file still holds the target after a failed save, so dropping
 	// it from memory would make a retry report that nothing is running while a

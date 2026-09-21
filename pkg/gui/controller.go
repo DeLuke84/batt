@@ -165,9 +165,11 @@ func (c *menuController) refreshOnOpen() {
 			c.updateAdapterState(adapter)
 		} else {
 			logrus.WithError(err).Error("Failed to get adapter")
+			c.adapterKnown = false
 			if c.compatibilityKnown {
 				c.menu.setEnabled(itemForceDischarge, false)
 			}
+			c.updateChargeOnceControls()
 		}
 	}
 }
@@ -267,9 +269,12 @@ func (c *menuController) updateChargeOnceControls() {
 	}
 
 	c.menu.setEnabled(itemChargeOnceLimit, canChargeOnceToLimit(
-		c.calibrationPhase, c.disableScheduled, c.adapterDisableScheduled, c.chargeOnceTarget, c.upperLimit, c.currentCharge))
+		c.calibrationPhase, c.disableScheduled, c.adapterDisableScheduled, c.chargeOnceTarget,
+		c.upperLimit, c.currentCharge, c.capabilities.ChargeControlMode,
+		c.capabilities.AdapterControl, c.adapterKnown, c.adapterEnabled))
 	c.menu.setEnabled(itemChargeOnceFull, canChargeOnceToFull(
-		c.calibrationPhase, c.disableScheduled, c.adapterDisableScheduled, c.chargeOnceTarget, c.upperLimit, c.currentCharge))
+		c.calibrationPhase, c.disableScheduled, c.adapterDisableScheduled, c.chargeOnceTarget,
+		c.upperLimit, c.currentCharge, c.capabilities.AdapterControl, c.adapterKnown, c.adapterEnabled))
 	c.menu.setEnabled(itemChargeOnceCancel, active)
 }
 
@@ -277,6 +282,7 @@ func (c *menuController) updateAdapterState(enabled bool) {
 	c.adapterEnabled = enabled
 	c.adapterKnown = true
 	c.updateForceDischargeControls()
+	c.updateChargeOnceControls()
 }
 
 func (c *menuController) updateForceDischargeControls() {
@@ -407,23 +413,45 @@ func canSetChargeLimit(phase calibration.Phase) bool {
 // canStartChargeOnce reports whether a new one-time charge may be started.
 // Calibration and a temporary disable both drive the charge limit themselves,
 // and a temporarily disabled power adapter cuts the power the charge needs.
-func canStartChargeOnce(phase calibration.Phase, disableScheduled, adapterDisableScheduled bool, chargeOnceTarget int) bool {
-	return phase == calibration.PhaseIdle && !disableScheduled && !adapterDisableScheduled && chargeOnceTarget == 0
+func canStartChargeOnce(
+	phase calibration.Phase,
+	disableScheduled, adapterDisableScheduled bool,
+	chargeOnceTarget int,
+	adapterControl, adapterKnown, adapterEnabled bool,
+) bool {
+	adapterAvailable := !adapterControl || (adapterKnown && adapterEnabled)
+	return phase == calibration.PhaseIdle && !disableScheduled && !adapterDisableScheduled &&
+		chargeOnceTarget == 0 && adapterAvailable
 }
 
 // canChargeOnceToLimit reports whether charging to the configured limit right
-// now would do anything: batt must limit charging and the battery must be below
-// that limit.
-func canChargeOnceToLimit(phase calibration.Phase, disableScheduled, adapterDisableScheduled bool, chargeOnceTarget, upperLimit, currentCharge int) bool {
-	return canStartChargeOnce(phase, disableScheduled, adapterDisableScheduled, chargeOnceTarget) &&
-		chargeLimitActive(upperLimit) && currentCharge < upperLimit
+// now would do anything. Firmware considers target-1 the top of its narrowest
+// legal one-time band, matching daemon admission and completion.
+func canChargeOnceToLimit(
+	phase calibration.Phase,
+	disableScheduled, adapterDisableScheduled bool,
+	chargeOnceTarget, upperLimit, currentCharge int,
+	chargeControlMode compatibility.ChargeControlMode,
+	adapterControl, adapterKnown, adapterEnabled bool,
+) bool {
+	targetReached := currentCharge >= upperLimit
+	if upperLimit < 100 && chargeControlMode == compatibility.ChargeControlFirmware {
+		targetReached = currentCharge >= upperLimit-1
+	}
+	return canStartChargeOnce(phase, disableScheduled, adapterDisableScheduled, chargeOnceTarget,
+		adapterControl, adapterKnown, adapterEnabled) && chargeLimitActive(upperLimit) && !targetReached
 }
 
 // canChargeOnceToFull reports whether a one-time charge to 100% would do
 // anything.
-func canChargeOnceToFull(phase calibration.Phase, disableScheduled, adapterDisableScheduled bool, chargeOnceTarget, upperLimit, currentCharge int) bool {
-	return canStartChargeOnce(phase, disableScheduled, adapterDisableScheduled, chargeOnceTarget) &&
-		chargeLimitActive(upperLimit) && currentCharge < 100
+func canChargeOnceToFull(
+	phase calibration.Phase,
+	disableScheduled, adapterDisableScheduled bool,
+	chargeOnceTarget, upperLimit, currentCharge int,
+	adapterControl, adapterKnown, adapterEnabled bool,
+) bool {
+	return canStartChargeOnce(phase, disableScheduled, adapterDisableScheduled, chargeOnceTarget,
+		adapterControl, adapterKnown, adapterEnabled) && chargeLimitActive(upperLimit) && currentCharge < 100
 }
 
 // chargeLimitActive reports whether the daemon reported a limit that batt
