@@ -98,19 +98,7 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	logrus.WithFields(capabilityLogFields(capabilities)).Info("detected hardware capabilities")
 	disableUnsupportedConfiguredFeatures()
 
-	// Initialize calibration state before the scheduler and main loop can use it.
-	if configPath != "" {
-		dir := filepath.Dir(configPath)
-		initCalibrationState(filepath.Join(dir, "batt.state.json"))
-		if err := initSleepDisabledState(filepath.Join(dir, "batt.sleep.json")); err != nil {
-			logrus.WithError(err).Warn("failed to initialize sleep disabled state")
-		}
-	} else {
-		initCalibrationState("/etc/batt.state.json")
-		if err := initSleepDisabledState("/etc/batt.sleep.json"); err != nil {
-			logrus.WithError(err).Warn("failed to initialize sleep disabled state")
-		}
-	}
+	initRuntimeStates(configPath)
 	disableUnsupportedCalibrationState()
 	restoreCalibrationSleepAssertion()
 
@@ -294,4 +282,15 @@ func shutdownAdapterAndSleep() error {
 		}
 	}
 	return nil
+}
+
+func initRuntimeStates(configPath string) {
+	dir := "/etc"
+	if configPath != "" {
+		dir = filepath.Dir(configPath)
+	}
+	initCalibrationState(filepath.Join(dir, "batt.state.json"))
+	if err := initSleepDisabledState(filepath.Join(dir, "batt.sleep.json")); err != nil {
+		logrus.WithError(err).Warn("failed to initialize sleep disabled state")
+	}
 }

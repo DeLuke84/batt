@@ -87,10 +87,8 @@ func TestPrintStatusJSON_PreventSleepOnAdapterDisable(t *testing.T) {
 				if val != tt.wantVal {
 					t.Fatalf("preventSleepOnAdapterDisable = %v, want %v", val, tt.wantVal)
 				}
-			} else {
-				if exists {
-					t.Fatalf("expected preventSleepOnAdapterDisable to be omitted when unsupported, got: %v", val)
-				}
+			} else if exists {
+				t.Fatalf("expected preventSleepOnAdapterDisable to be omitted when unsupported, got: %v", val)
 			}
 		})
 	}
