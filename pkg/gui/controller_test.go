@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/charlie0129/batt/pkg/calibration"
+	"github.com/charlie0129/batt/pkg/compatibility"
 )
 
 func TestCalibrationAndTemporaryDisableMenuExclusion(t *testing.T) {
@@ -38,6 +39,60 @@ func TestCalibrationAndTemporaryDisableMenuExclusion(t *testing.T) {
 			wantForceDischargeSubmenu := tt.phase == calibration.PhaseIdle || tt.adapterDisableScheduled
 			if got := canOpenForceDischargeMenu(tt.phase, tt.adapterDisableScheduled); got != wantForceDischargeSubmenu {
 				t.Errorf("canOpenForceDischargeMenu() = %v, want %v", got, wantForceDischargeSubmenu)
+			}
+		})
+	}
+}
+
+func TestCanShowPreventSleepOnAdapterDisable(t *testing.T) {
+	tests := []struct {
+		name         string
+		installed    bool
+		capabilities compatibility.Capabilities
+		needsUpgrade bool
+		want         bool
+	}{
+		{
+			name:         "supported and ready",
+			installed:    true,
+			capabilities: compatibility.Capabilities{ChargingControl: true, AdapterControl: true},
+			needsUpgrade: false,
+			want:         true,
+		},
+		{
+			name:         "not installed",
+			installed:    false,
+			capabilities: compatibility.Capabilities{ChargingControl: true, AdapterControl: true},
+			needsUpgrade: false,
+			want:         false,
+		},
+		{
+			name:         "needs upgrade",
+			installed:    true,
+			capabilities: compatibility.Capabilities{ChargingControl: true, AdapterControl: true},
+			needsUpgrade: true,
+			want:         false,
+		},
+		{
+			name:         "no charging control",
+			installed:    true,
+			capabilities: compatibility.Capabilities{ChargingControl: false, AdapterControl: true},
+			needsUpgrade: false,
+			want:         false,
+		},
+		{
+			name:         "no adapter control",
+			installed:    true,
+			capabilities: compatibility.Capabilities{ChargingControl: true, AdapterControl: false},
+			needsUpgrade: false,
+			want:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canShowPreventSleepOnAdapterDisable(tt.installed, tt.capabilities, tt.needsUpgrade); got != tt.want {
+				t.Errorf("canShowPreventSleepOnAdapterDisable() = %v, want %v", got, tt.want)
 			}
 		})
 	}
