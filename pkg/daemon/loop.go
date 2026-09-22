@@ -48,6 +48,9 @@ func maintainAdapterDisable(conf config.Config, now time.Time) bool {
 
 	until := conf.AdapterDisableUntil()
 	if until.IsZero() {
+		if err := reconcileAdapterSleepPolicy(); err != nil {
+			logrus.WithError(err).Error("failed to reconcile adapter sleep policy")
+		}
 		return false
 	}
 	// Calibration owns the adapter throughout its workflow and restores its
@@ -63,10 +66,8 @@ func maintainAdapterDisable(conf config.Config, now time.Time) bool {
 	}
 
 	if now.Before(until) {
-		if enabled {
-			if err := smcDisableAdapter(); err != nil {
-				logrus.WithError(err).Error("failed to maintain temporary power adapter disable")
-			}
+		if err := smcDisableAdapter(); err != nil {
+			logrus.WithError(err).Error("failed to maintain temporary power adapter disable")
 		}
 		return false
 	}
@@ -76,10 +77,16 @@ func maintainAdapterDisable(conf config.Config, now time.Time) bool {
 			logrus.WithError(err).Error("failed to enable power adapter after temporary disable")
 			return false
 		}
+	} else {
+		if err := releaseSleep(sleepHoldAdapter); err != nil {
+			logrus.WithError(err).Error("failed to release sleep hold after temporary disable")
+			return false
+		}
 	}
 	conf.ClearAdapterDisableTimer()
 	if err := conf.Save(); err != nil {
 		logrus.Errorf("saveConfig failed: %v", err)
+		return false
 	}
 	logrus.Info("adapter disable duration elapsed, power adapter enabled")
 	return true

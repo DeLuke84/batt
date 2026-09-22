@@ -66,11 +66,16 @@ func stubAdapter(t *testing.T, enabled bool) *fakeAdapter {
 
 	previousDisable, previousEnable := rawDisableAdapter, rawEnableAdapter
 	previousConf := conf
+	previousIsAdapter := smcIsAdapterEnabled
+	previousCap := capabilities
 	t.Cleanup(func() {
 		rawDisableAdapter, rawEnableAdapter = previousDisable, previousEnable
 		conf = previousConf
+		smcIsAdapterEnabled = previousIsAdapter
+		capabilities = previousCap
 	})
 
+	capabilities.AdapterControl = true
 	fake := &fakeAdapter{enabled: enabled}
 	rawDisableAdapter = func() error {
 		if fake.disableErr != nil {
@@ -85,6 +90,9 @@ func stubAdapter(t *testing.T, enabled bool) *fakeAdapter {
 		}
 		fake.enabled = true
 		return nil
+	}
+	smcIsAdapterEnabled = func() (bool, error) {
+		return fake.enabled, nil
 	}
 	return fake
 }
@@ -658,5 +666,123 @@ func TestAdapterPolicyKeepsHoldWhenEnableFails(t *testing.T) {
 	}
 	if !sleepHolds[sleepHoldAdapter] {
 		t.Fatal("the hold must survive a failed enable")
+	}
+}
+
+func TestReconcileAdapterSleepPolicy_AcquiresHoldWhenAdapterDisabledAndOptionEnabled(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	stubAdapter(t, false) // adapter is disabled
+	conf = &sleepPolicyConf{prevent: true}
+
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("expected sleep hold to be acquired")
+	}
+	if !sleep.value {
+		t.Fatal("expected SleepDisabled to be set to true")
+	}
+}
+
+func TestReconcileAdapterSleepPolicy_ReleasesHoldWhenAdapterEnabled(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("hold should be active while adapter is disabled")
+	}
+
+	// Now adapter becomes enabled
+	adapter.enabled = true
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if sleepHolds[sleepHoldAdapter] {
+		t.Fatal("hold should be released once adapter is enabled")
+	}
+	if sleep.value {
+		t.Fatal("SleepDisabled should be restored to false")
+	}
+}
+
+func TestReconcileAdapterSleepPolicy_ReleasesHoldWhenOptionDisabled(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	stubAdapter(t, false) // adapter remains disabled
+	c := &sleepPolicyConf{prevent: true}
+	conf = c
+
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("hold should be active while setting is enabled")
+	}
+
+	// User disables setting while adapter is still cut
+	c.prevent = false
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if sleepHolds[sleepHoldAdapter] {
+		t.Fatal("hold should be released once setting is disabled")
+	}
+	if sleep.value {
+		t.Fatal("SleepDisabled should be restored to false")
+	}
+}
+
+func TestReconcileAdapterSleepPolicy_PreExistingSleepDisabled(t *testing.T) {
+	sleep := stubSleepDisabled(t, true) // user originally had SleepDisabled=true
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if !sleep.value {
+		t.Fatal("pre-existing SleepDisabled=true must remain true")
+	}
+
+	adapter.enabled = true
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if !sleep.value {
+		t.Fatal("pre-existing SleepDisabled=true must still remain true after release")
+	}
+}
+
+func TestReconcileAdapterSleepPolicy_RetriesFailedRelease(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter.enabled = true
+	sleep.setErr = errors.New("IOPMSetSystemPowerSetting failed")
+
+	if err := reconcileAdapterSleepPolicy(); err == nil {
+		t.Fatal("expected reconcile to fail when release fails")
+	}
+	if !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("hold must be preserved for retry")
+	}
+
+	// Retry succeeds
+	sleep.setErr = nil
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatalf("retry should succeed: %v", err)
+	}
+	if sleepHolds[sleepHoldAdapter] {
+		t.Fatal("hold should now be released")
 	}
 }

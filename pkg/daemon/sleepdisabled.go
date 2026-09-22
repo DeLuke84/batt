@@ -64,6 +64,7 @@ const sleepHoldAdapter = "adapter-disabled"
 
 var (
 	sleepDisabledMu sync.Mutex
+	adapterPolicyMu sync.Mutex
 
 	// sleepHolds are the reasons currently holding sleep disabled, keyed by
 	// reason id. Holds are idempotent per reason rather than counted: batt's
@@ -365,6 +366,9 @@ func restoreSleepLocked() error {
 // anyway: the setting exists precisely to keep the display alive, and silently
 // proceeding would blank it.
 func disableAdapterWithSleepPolicy() error {
+	adapterPolicyMu.Lock()
+	defer adapterPolicyMu.Unlock()
+
 	holdRequested := conf != nil && conf.PreventSleepOnAdapterDisable()
 	if holdRequested {
 		if err := holdSleep(sleepHoldAdapter); err != nil {
@@ -376,6 +380,7 @@ func disableAdapterWithSleepPolicy() error {
 		if holdRequested {
 			if releaseErr := releaseSleep(sleepHoldAdapter); releaseErr != nil {
 				logrus.WithError(releaseErr).Error("failed to restore sleep after adapter disable failed")
+				return fmt.Errorf("adapter disable failed (%w); sleep hold rollback also failed: %v", err, releaseErr)
 			}
 		}
 		return err
@@ -388,12 +393,52 @@ func disableAdapterWithSleepPolicy() error {
 // one is held. The release is unconditional on the setting: the setting may have
 // been switched off while the hold was active, and the hold must still go.
 func enableAdapterWithSleepPolicy() error {
+	adapterPolicyMu.Lock()
+	defer adapterPolicyMu.Unlock()
+
 	if err := rawEnableAdapter(); err != nil {
 		return err
 	}
 
 	if err := releaseSleep(sleepHoldAdapter); err != nil {
 		logrus.WithError(err).Error("failed to restore sleep after enabling adapter")
+		return fmt.Errorf("failed to restore sleep after enabling adapter: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileAdapterSleepPolicy inspects the actual adapter state and ensures that
+// the sleep hold matches policy:
+//   - if the adapter is disabled and prevent-sleep-on-adapter-disable is enabled,
+//     the hold is acquired;
+//   - if the adapter is enabled, or the setting is disabled, the hold is released.
+//
+// Reconciliation is serialized by adapterPolicyMu and is idempotent.
+func reconcileAdapterSleepPolicy() error {
+	adapterPolicyMu.Lock()
+	defer adapterPolicyMu.Unlock()
+
+	if !capabilities.AdapterControl {
+		return nil
+	}
+
+	adapterEnabled, err := smcIsAdapterEnabled()
+	if err != nil {
+		return fmt.Errorf("failed to check adapter state during sleep reconciliation: %w", err)
+	}
+
+	settingEnabled := conf != nil && conf.PreventSleepOnAdapterDisable()
+
+	if !adapterEnabled && settingEnabled {
+		if err := holdSleep(sleepHoldAdapter); err != nil {
+			return fmt.Errorf("failed to acquire sleep hold for disabled adapter: %w", err)
+		}
+		return nil
+	}
+
+	if err := releaseSleep(sleepHoldAdapter); err != nil {
+		return fmt.Errorf("failed to release sleep hold: %w", err)
 	}
 
 	return nil
