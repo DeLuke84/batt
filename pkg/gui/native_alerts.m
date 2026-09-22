@@ -28,7 +28,7 @@ bool batt_show_confirmation(int confirmation) {
                                   accessibilityDescription:@"notes"];
             alert.messageText = @"Precautions";
             NSString *text =
-                @"1. The lid of your MacBook MUST be open (unless \"Prevent Sleep when Adapter is Disabled\" is enabled), otherwise your Mac will go to sleep immediately.\n"
+                @"1. Keep the lid open unless \"Prevent Sleep when Adapter is Disabled\" is enabled. When using that option with the lid closed, keep your Mac monitored and never place it in a bag.\n"
                  "2. Force Discharge cuts wall power, making your Mac run on battery power just as if it were unplugged. If the battery charge is exhausted, your Mac will shut down.";
             if (confirmation == BattConfirmationForceDischargeIndefinitely) {
                 text = [text stringByAppendingString:
@@ -49,7 +49,7 @@ bool batt_show_confirmation(int confirmation) {
                  "• batt will prevent idle sleep until calibration finishes, is cancelled, or fails.\n"
                  "• You can pause or cancel anytime from the menu.\n"
                  "• Highly recommend keeping your Mac connected to power throughout the process to prevent the battery level from dropping below the threshold without timely charging.\n"
-                 "• Closing the lid or explicitly choosing Sleep can still force sleep, so keep the lid open during calibration.";
+                 "• Closing the lid or explicitly choosing Sleep can still force sleep unless \"Prevent Sleep when Adapter is Disabled\" is enabled. When using that option with the lid closed, keep your Mac monitored and never place it in a bag.";
         } else if (confirmation == BattConfirmationPreventSleepOnAdapterDisable) {
             alert.alertStyle = NSAlertStyleWarning;
             alert.icon = [NSImage imageWithSystemSymbolName:@"exclamationmark.triangle"
