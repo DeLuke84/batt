@@ -45,6 +45,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -88,7 +89,7 @@ var (
 )
 
 type sleepDisabledSnapshot struct {
-	Previous bool `json:"previous"`
+	Previous *bool `json:"previous"`
 }
 
 func getSleepDisabledSetting() (bool, error) {
@@ -114,74 +115,131 @@ func setSleepDisabledSetting(disabled bool) error {
 // initSleepDisabledState restores a value left behind by a previous daemon
 // instance. Restoring during shutdown is unreliable -- the property service may
 // already be torn down -- so batt restores on start instead.
-func initSleepDisabledState(path string) {
+func initSleepDisabledState(path string) error {
 	sleepDisabledMu.Lock()
 	defer sleepDisabledMu.Unlock()
 
 	sleepDisabledPath = path
 
-	snapshot, ok := loadSleepDisabledSnapshotLocked()
+	snapshot, ok, err := loadSleepDisabledSnapshotLocked()
+	if err != nil {
+		logrus.WithError(err).Error("unreadable or malformed sleep snapshot found; preserving file for recovery")
+		return err
+	}
 	if !ok {
-		return
+		return nil
 	}
 
-	if err := setSleepDisabled(snapshot.Previous); err != nil {
+	if err := setSleepDisabled(*snapshot.Previous); err != nil {
 		// Keep the snapshot: the next start gets another chance.
 		logrus.WithError(err).Error("failed to restore SleepDisabled after restart")
-		return
+		return err
 	}
 
-	logrus.Infof("restored SleepDisabled=%t left behind by a previous run", snapshot.Previous)
-	clearSleepDisabledSnapshotLocked()
+	logrus.Infof("restored SleepDisabled=%t left behind by a previous run", *snapshot.Previous)
+	return clearSleepDisabledSnapshotLocked()
 }
 
-// loadSleepDisabledSnapshotLocked reads a pending snapshot, if any. A file that
-// cannot be parsed is discarded -- keeping it would block every future restore.
-func loadSleepDisabledSnapshotLocked() (sleepDisabledSnapshot, bool) {
+// RecoverSleepDisabled recovers SleepDisabled from a leftover snapshot.
+func RecoverSleepDisabled(path string) error {
+	return initSleepDisabledState(path)
+}
+
+// loadSleepDisabledSnapshotLocked reads a pending snapshot, if any.
+// A malformed or unreadable file is preserved for recovery and returned as an error.
+func loadSleepDisabledSnapshotLocked() (sleepDisabledSnapshot, bool, error) {
 	var snapshot sleepDisabledSnapshot
 
 	if sleepDisabledPath == "" {
-		return snapshot, false
+		return snapshot, false, nil
 	}
 
 	b, err := os.ReadFile(sleepDisabledPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			logrus.WithError(err).Warn("failed to read sleep-disabled state")
+		if os.IsNotExist(err) {
+			return snapshot, false, nil
 		}
-		return snapshot, false
+		logrus.WithError(err).Warn("failed to read sleep-disabled state")
+		return snapshot, false, err
 	}
 
 	if err := json.Unmarshal(b, &snapshot); err != nil {
-		logrus.WithError(err).Warn("discarding malformed sleep-disabled state")
-		clearSleepDisabledSnapshotLocked()
-		return snapshot, false
+		logrus.WithError(err).Warn("malformed sleep-disabled state")
+		return snapshot, false, fmt.Errorf("malformed sleep-disabled state: %w", err)
 	}
 
-	return snapshot, true
+	if snapshot.Previous == nil {
+		err := fmt.Errorf("missing 'previous' field in sleep-disabled state")
+		logrus.WithError(err).Warn("invalid sleep-disabled state")
+		return snapshot, false, err
+	}
+
+	return snapshot, true, nil
 }
 
-func persistSleepDisabledSnapshotLocked(previous bool) {
+func persistSleepDisabledSnapshotLocked(previous bool) error {
 	if sleepDisabledPath == "" {
-		return
+		return nil
 	}
-	b, err := json.Marshal(sleepDisabledSnapshot{Previous: previous})
+	b, err := json.Marshal(sleepDisabledSnapshot{Previous: &previous})
 	if err != nil {
-		logrus.WithError(err).Warn("failed to marshal sleep-disabled state")
-		return
+		return fmt.Errorf("failed to marshal sleep-disabled state: %w", err)
 	}
-	if err := os.WriteFile(sleepDisabledPath, b, 0o600); err != nil {
-		logrus.WithError(err).Warn("failed to persist sleep-disabled state")
+
+	dir := filepath.Dir(sleepDisabledPath)
+	tmpFile, err := os.CreateTemp(dir, "batt.sleep.*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for sleep-disabled state: %w", err)
 	}
+	tmpName := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmpFile.Chmod(0o600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to chmod temp file: %w", err)
+	}
+
+	if _, err := tmpFile.Write(b); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, sleepDisabledPath); err != nil {
+		return fmt.Errorf("failed to rename temp file to %s: %w", sleepDisabledPath, err)
+	}
+
+	if parentDir, err := os.Open(dir); err == nil {
+		_ = parentDir.Sync()
+		_ = parentDir.Close()
+	}
+
+	cleanup = false
+	return nil
 }
 
-func clearSleepDisabledSnapshotLocked() {
+func clearSleepDisabledSnapshotLocked() error {
 	if sleepDisabledPath == "" {
-		return
+		return nil
 	}
 	if err := os.Remove(sleepDisabledPath); err != nil && !os.IsNotExist(err) {
 		logrus.WithError(err).Warn("failed to remove sleep-disabled state")
+		return err
 	}
+	return nil
 }
 
 // holdSleep suppresses all sleep, including lid-close sleep, on behalf of
@@ -209,15 +267,22 @@ func takeFirstHoldLocked() error {
 	// A snapshot on disk means an earlier restore did not complete. Its value is
 	// the user's original setting; the live setting is batt's leftover and must
 	// not be mistaken for user intent.
-	if snapshot, ok := loadSleepDisabledSnapshotLocked(); ok {
-		sleepDisabledPrevious = snapshot.Previous
+	snapshot, ok, err := loadSleepDisabledSnapshotLocked()
+	if err != nil {
+		return fmt.Errorf("cannot acquire sleep hold: existing snapshot is unreadable or malformed: %w", err)
+	}
+
+	if ok {
+		sleepDisabledPrevious = *snapshot.Previous
 	} else {
 		previous, err := getSleepDisabled()
 		if err != nil {
 			return err
 		}
+		if err := persistSleepDisabledSnapshotLocked(previous); err != nil {
+			return fmt.Errorf("failed to persist sleep-disabled snapshot: %w", err)
+		}
 		sleepDisabledPrevious = previous
-		persistSleepDisabledSnapshotLocked(previous)
 	}
 
 	if sleepDisabledPrevious {
@@ -227,7 +292,9 @@ func takeFirstHoldLocked() error {
 	}
 
 	if err := setSleepDisabled(true); err != nil {
-		clearSleepDisabledSnapshotLocked()
+		if !ok {
+			_ = clearSleepDisabledSnapshotLocked()
+		}
 		return err
 	}
 
@@ -266,16 +333,19 @@ func releaseAllSleepHolds() error {
 		return nil
 	}
 
+	if err := restoreSleepLocked(); err != nil {
+		return err
+	}
+
 	sleepHolds = map[string]bool{}
-	return restoreSleepLocked()
+	return nil
 }
 
 func restoreSleepLocked() error {
 	if sleepDisabledPrevious {
 		// Sleep was already disabled before batt held it. Leave it alone.
 		sleepDisabledPrevious = false
-		clearSleepDisabledSnapshotLocked()
-		return nil
+		return clearSleepDisabledSnapshotLocked()
 	}
 
 	if err := setSleepDisabled(false); err != nil {
@@ -283,8 +353,7 @@ func restoreSleepLocked() error {
 		return err
 	}
 
-	clearSleepDisabledSnapshotLocked()
-	return nil
+	return clearSleepDisabledSnapshotLocked()
 }
 
 // disableAdapterWithSleepPolicy cuts adapter input. Doing so makes macOS treat

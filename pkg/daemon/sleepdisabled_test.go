@@ -363,7 +363,7 @@ func TestInitKeepsSnapshotWhenRestoreFails(t *testing.T) {
 	}
 }
 
-func TestInitDiscardsMalformedSnapshot(t *testing.T) {
+func TestInitPreservesMalformedSnapshot(t *testing.T) {
 	fake := stubSleepDisabled(t, false)
 	path := sleepDisabledPath
 
@@ -371,13 +371,141 @@ func TestInitDiscardsMalformedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	initSleepDisabledState(path)
+	err := initSleepDisabledState(path)
+	if err == nil {
+		t.Fatal("expected error on malformed snapshot")
+	}
 
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("a malformed snapshot must be discarded, not kept forever")
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("a malformed snapshot must be preserved for recovery, got: %v", statErr)
 	}
 	if fake.writes != 0 {
 		t.Fatalf("nothing should be written for a malformed snapshot, got %d", fake.writes)
+	}
+}
+
+func TestInitPreservesMissingPreviousField(t *testing.T) {
+	fake := stubSleepDisabled(t, false)
+	path := sleepDisabledPath
+
+	if err := os.WriteFile(path, []byte(`{"other": 123}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := initSleepDisabledState(path)
+	if err == nil {
+		t.Fatal("expected error on missing previous field")
+	}
+
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("snapshot with missing previous must be preserved, got: %v", statErr)
+	}
+	if fake.writes != 0 {
+		t.Fatalf("nothing should be written when previous field is missing, got %d", fake.writes)
+	}
+}
+
+func TestTakeFirstHoldFailsWhenSnapshotMalformed(t *testing.T) {
+	fake := stubSleepDisabled(t, false)
+	path := sleepDisabledPath
+
+	if err := os.WriteFile(path, []byte(`{"previous": null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := holdSleep("test-reason"); err == nil {
+		t.Fatal("holdSleep must fail when existing snapshot is malformed")
+	}
+
+	if fake.writes != 0 {
+		t.Fatalf("setSleepDisabled must not be called when snapshot is malformed, got %d", fake.writes)
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("malformed snapshot must be preserved, got: %v", statErr)
+	}
+}
+
+func TestTakeFirstHoldFailsWhenPersistenceFails(t *testing.T) {
+	fake := stubSleepDisabled(t, false)
+	// Point to a directory that cannot be created or written to
+	sleepDisabledPath = filepath.Join(t.TempDir(), "nonexistent", "batt.sleep.json")
+
+	if err := holdSleep("test-reason"); err == nil {
+		t.Fatal("holdSleep must fail when persistence fails")
+	}
+
+	if fake.writes != 0 {
+		t.Fatalf("setSleepDisabled must not be called when persistence fails, got %d", fake.writes)
+	}
+	if len(sleepHolds) != 0 {
+		t.Fatalf("no holds should be recorded on persistence failure, got %v", sleepHolds)
+	}
+}
+
+func TestReleaseAllSleepHoldsPreservesHoldsOnRestoreFailure(t *testing.T) {
+	fake := stubSleepDisabled(t, false)
+
+	if err := holdSleep("reason-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := holdSleep("reason-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.setErr = errors.New("IOPMSetSystemPowerSetting failed")
+
+	if err := releaseAllSleepHolds(); err == nil {
+		t.Fatal("expected releaseAllSleepHolds to fail when restore fails")
+	}
+
+	if len(sleepHolds) == 0 {
+		t.Fatal("releaseAllSleepHolds must retain holds in memory when restore fails")
+	}
+}
+
+func TestAtomicSnapshotWritePreservesValidSnapshotOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	validPath := filepath.Join(dir, "batt.sleep.json")
+	if err := os.WriteFile(validPath, []byte(`{"previous":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make directory read-only so creating a temporary file fails
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+
+	sleepDisabledPath = validPath
+	err := persistSleepDisabledSnapshotLocked(true)
+	if err == nil {
+		t.Fatal("expected persistence failure on read-only dir")
+	}
+
+	// The original file content must still be intact
+	b, readErr := os.ReadFile(validPath)
+	if readErr != nil {
+		t.Fatalf("original file should still exist: %v", readErr)
+	}
+	if string(b) != `{"previous":false}` {
+		t.Fatalf("original file was corrupted: %s", string(b))
+	}
+}
+
+func TestSnapshotPermissionsAre0600(t *testing.T) {
+	stubSleepDisabled(t, false)
+	path := sleepDisabledPath
+
+	if err := holdSleep("test-reason"); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("snapshot file must exist: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("expected mode 0600, got %#o", mode)
 	}
 }
 
