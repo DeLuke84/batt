@@ -389,6 +389,7 @@ func TestStartCalibration_WithAdapterDisabledAndOptionEnabledAcquiresHold(t *tes
 }
 
 func TestStartCalibration_AdapterReadErrorAborts(t *testing.T) {
+	sleepCalls := stubCalibrationSleep(t)
 	previousConf, previousState, previousStatePath, previousCap := conf, calibrationState, calibrationStatePath, capabilities
 	previousIsAdapter := smcIsAdapterEnabled
 	previousIsCharging := smcIsChargingEnabled
@@ -411,6 +412,9 @@ func TestStartCalibration_AdapterReadErrorAborts(t *testing.T) {
 	}
 	if calibrationState.Phase != calibration.PhaseIdle {
 		t.Fatalf("phase = %s, want idle", calibrationState.Phase)
+	}
+	if sleepCalls.prevent != 0 {
+		t.Fatalf("calibration sleep assertion acquired before preflight completed: %d", sleepCalls.prevent)
 	}
 }
 

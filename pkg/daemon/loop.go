@@ -46,11 +46,12 @@ func maintainAdapterDisable(conf config.Config, now time.Time) bool {
 	chargeControlTransitionMu.Lock()
 	defer chargeControlTransitionMu.Unlock()
 
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		logrus.WithError(err).Error("failed to reconcile adapter sleep policy")
+	}
+
 	until := conf.AdapterDisableUntil()
 	if until.IsZero() {
-		if err := reconcileAdapterSleepPolicy(); err != nil {
-			logrus.WithError(err).Error("failed to reconcile adapter sleep policy")
-		}
 		return false
 	}
 	// Calibration owns the adapter throughout its workflow and restores its

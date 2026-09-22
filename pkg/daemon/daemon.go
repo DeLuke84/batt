@@ -106,6 +106,8 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		if err := reconcileAdapterSleepPolicy(); err != nil {
 			logrus.WithError(err).Error("failed to reconcile adapter sleep policy during startup")
 		}
+	} else if err := restorePendingSleepDisabled(); err != nil {
+		logrus.WithError(err).Error("failed to restore pending sleep-disabled state during startup")
 	}
 
 	router := setupRoutes()

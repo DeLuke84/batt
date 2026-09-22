@@ -12,11 +12,12 @@ import (
 // fakeSleepSetting replaces the IOKit calls with an in-memory value and records
 // how often the setting was actually written.
 type fakeSleepSetting struct {
-	value     bool
-	writes    int
-	getErr    error
-	setErr    error
-	setErrFor *bool // fail only when writing this value
+	value         bool
+	writes        int
+	writtenValues []bool
+	getErr        error
+	setErr        error
+	setErrFor     *bool // fail only when writing this value
 }
 
 func (f *fakeSleepSetting) get() (bool, error) {
@@ -32,6 +33,7 @@ func (f *fakeSleepSetting) set(disabled bool) error {
 	}
 	f.value = disabled
 	f.writes++
+	f.writtenValues = append(f.writtenValues, disabled)
 	return nil
 }
 
@@ -345,7 +347,7 @@ func TestSnapshotIsPersistedAndClearedAgain(t *testing.T) {
 	}
 }
 
-func TestInitRestoresSnapshotLeftBehind(t *testing.T) {
+func TestRecoverSleepDisabledRestoresSnapshotLeftBehind(t *testing.T) {
 	fake := stubSleepDisabled(t, true) // daemon was killed with sleep disabled
 	path := sleepDisabledPath
 
@@ -353,17 +355,19 @@ func TestInitRestoresSnapshotLeftBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	initSleepDisabledState(path)
+	if err := RecoverSleepDisabled(path); err != nil {
+		t.Fatal(err)
+	}
 
 	if fake.value {
-		t.Fatal("startup must restore the pre-crash value")
+		t.Fatal("recovery must restore the pre-crash value")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("snapshot should be consumed, got %v", err)
 	}
 }
 
-func TestInitKeepsSnapshotWhenRestoreFails(t *testing.T) {
+func TestRecoverSleepDisabledKeepsSnapshotWhenRestoreFails(t *testing.T) {
 	fake := stubSleepDisabled(t, true)
 	path := sleepDisabledPath
 	fake.setErr = errors.New("IOPMSetSystemPowerSetting failed")
@@ -372,10 +376,42 @@ func TestInitKeepsSnapshotWhenRestoreFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	initSleepDisabledState(path)
+	if err := RecoverSleepDisabled(path); err == nil {
+		t.Fatal("expected recovery to fail")
+	}
 
 	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("snapshot must survive so the next start can retry: %v", err)
+		t.Fatalf("snapshot must survive so the next recovery can retry: %v", err)
+	}
+}
+
+func TestStartupReconcileKeepsSleepDisabledWithoutGap(t *testing.T) {
+	fake := stubSleepDisabled(t, true)
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+	capabilities.AdapterControl = true
+	path := sleepDisabledPath
+
+	if err := os.WriteFile(path, []byte(`{"previous":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initSleepDisabledState(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+
+	if adapter.enabled {
+		t.Fatal("adapter should remain disabled")
+	}
+	if !fake.value || !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("startup must retain sleep protection for the disabled adapter")
+	}
+	for _, value := range fake.writtenValues {
+		if !value {
+			t.Fatal("startup briefly restored sleep before reacquiring the hold")
+		}
 	}
 }
 

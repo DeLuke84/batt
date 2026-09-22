@@ -121,18 +121,19 @@ You must run this command as root.`,
 					if err != nil {
 						return fmt.Errorf("failed to enable adapter: %v", err)
 					}
-					sleepStatePath := "/etc/batt.sleep.json"
-					if configPath != "" {
-						sleepStatePath = filepath.Join(filepath.Dir(configPath), "batt.sleep.json")
-					}
-					if err := daemon.RecoverSleepDisabled(sleepStatePath); err != nil {
-						logrus.WithError(err).Warn("failed to restore sleep disabled state during uninstall")
-					}
 				}
 
 				if err := smcC.Close(); err != nil {
 					return fmt.Errorf("failed to close SMC: %v", err)
 				}
+			}
+
+			sleepStatePath := "/etc/batt.sleep.json"
+			if configPath != "" {
+				sleepStatePath = filepath.Join(filepath.Dir(configPath), "batt.sleep.json")
+			}
+			if err := daemon.RecoverSleepDisabled(sleepStatePath); err != nil {
+				return fmt.Errorf("failed to restore system sleep setting: %w", err)
 			}
 
 			fmt.Println("successfully uninstalled")

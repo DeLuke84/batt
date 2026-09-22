@@ -159,9 +159,6 @@ func startCalibration(threshold, holdMinutes int) error {
 	if !conf.AdapterDisableUntil().IsZero() {
 		return ErrTemporaryAdapterDisableInProgress
 	}
-	if err := preventCalibrationSleep(); err != nil {
-		return fmt.Errorf("prevent sleep during calibration: %w", err)
-	}
 
 	if threshold < 5 {
 		threshold = 5
@@ -194,6 +191,9 @@ func startCalibration(threshold, holdMinutes int) error {
 		if err := reconcileAdapterSleepPolicy(); err != nil {
 			return fmt.Errorf("failed to reconcile adapter sleep policy before starting calibration: %w", err)
 		}
+	}
+	if err := preventCalibrationSleep(); err != nil {
+		return fmt.Errorf("prevent sleep during calibration: %w", err)
 	}
 
 	if sseHub != nil {

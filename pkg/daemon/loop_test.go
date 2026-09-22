@@ -495,6 +495,33 @@ func TestMaintainAdapterDisable_EnableFailureKeepsTimer(t *testing.T) {
 	}
 }
 
+func TestMaintainAdapterDisable_ActiveTimerRetriesReleaseAfterOptionDisabled(t *testing.T) {
+	previousIsAdapter, previousDisable := smcIsAdapterEnabled, smcDisableAdapter
+	previousConf, previousCapabilities := conf, capabilities
+	t.Cleanup(func() {
+		smcIsAdapterEnabled, smcDisableAdapter = previousIsAdapter, previousDisable
+		conf, capabilities = previousConf, previousCapabilities
+		sleepHolds = map[string]bool{}
+	})
+
+	sleep := stubSleepDisabled(t, false)
+	capabilities.AdapterControl = true
+	sleepHolds[sleepHoldAdapter] = true
+	smcIsAdapterEnabled = func() (bool, error) { return false, nil }
+	smcDisableAdapter = func() error { return nil }
+	configured := &loopMockConf{
+		mockConf: mockConf{adapterDisableUntil: time.Now().Add(time.Hour)},
+		prevent:  false,
+	}
+	conf = configured
+
+	maintainAdapterDisable(configured, time.Now())
+
+	if sleepHolds[sleepHoldAdapter] || sleep.value {
+		t.Fatal("disabled option must release a stale hold before the timer expires")
+	}
+}
+
 func TestMaintainAdapterDisable_AlreadyEnabledRetriesReleaseHold(t *testing.T) {
 	previousIsAdapter := smcIsAdapterEnabled
 	t.Cleanup(func() {

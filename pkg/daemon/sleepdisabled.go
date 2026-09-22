@@ -113,37 +113,49 @@ func setSleepDisabledSetting(disabled bool) error {
 	return nil
 }
 
-// initSleepDisabledState restores a value left behind by a previous daemon
-// instance. Restoring during shutdown is unreliable -- the property service may
-// already be torn down -- so batt restores on start instead.
+// initSleepDisabledState configures and validates the pending-restore snapshot.
+// It deliberately does not restore it yet: startup must first read the adapter
+// state. If adapter input is still disabled and the option is enabled, restoring
+// sleep even briefly would immediately end Clamshell mode.
 func initSleepDisabledState(path string) error {
 	sleepDisabledMu.Lock()
 	defer sleepDisabledMu.Unlock()
 
 	sleepDisabledPath = path
-
-	snapshot, ok, err := loadSleepDisabledSnapshotLocked()
+	_, _, err := loadSleepDisabledSnapshotLocked()
 	if err != nil {
 		logrus.WithError(err).Error("unreadable or malformed sleep snapshot found; preserving file for recovery")
-		return err
 	}
-	if !ok {
-		return nil
-	}
-
-	if err := setSleepDisabled(*snapshot.Previous); err != nil {
-		// Keep the snapshot: the next start gets another chance.
-		logrus.WithError(err).Error("failed to restore SleepDisabled after restart")
-		return err
-	}
-
-	logrus.Infof("restored SleepDisabled=%t left behind by a previous run", *snapshot.Previous)
-	return clearSleepDisabledSnapshotLocked()
+	return err
 }
 
-// RecoverSleepDisabled recovers SleepDisabled from a leftover snapshot.
+// RecoverSleepDisabled restores a pending snapshot without applying adapter
+// policy. It is used during uninstall, after the daemon has been stopped and
+// adapter input has been restored.
 func RecoverSleepDisabled(path string) error {
-	return initSleepDisabledState(path)
+	sleepDisabledMu.Lock()
+	defer sleepDisabledMu.Unlock()
+
+	sleepDisabledPath = path
+	return restorePendingSleepDisabledLocked()
+}
+
+func restorePendingSleepDisabled() error {
+	sleepDisabledMu.Lock()
+	defer sleepDisabledMu.Unlock()
+	return restorePendingSleepDisabledLocked()
+}
+
+func restorePendingSleepDisabledLocked() error {
+	snapshot, ok, err := loadSleepDisabledSnapshotLocked()
+	if err != nil || !ok {
+		return err
+	}
+	if err := setSleepDisabled(*snapshot.Previous); err != nil {
+		return err
+	}
+	logrus.Infof("restored SleepDisabled=%t left behind by a previous run", *snapshot.Previous)
+	return clearSleepDisabledSnapshotLocked()
 }
 
 // loadSleepDisabledSnapshotLocked reads a pending snapshot, if any.
@@ -180,7 +192,7 @@ func loadSleepDisabledSnapshotLocked() (sleepDisabledSnapshot, bool, error) {
 
 func persistSleepDisabledSnapshotLocked(previous bool) error {
 	if sleepDisabledPath == "" {
-		return nil
+		return fmt.Errorf("sleep-disabled snapshot path is not configured")
 	}
 	b, err := json.Marshal(sleepDisabledSnapshot{Previous: &previous})
 	if err != nil {
@@ -439,6 +451,12 @@ func reconcileAdapterSleepPolicy() error {
 
 	if err := releaseSleep(sleepHoldAdapter); err != nil {
 		return fmt.Errorf("failed to release sleep hold: %w", err)
+	}
+
+	// A previous daemon may have left a snapshot without any in-memory hold.
+	// Once adapter policy no longer needs protection, finish that recovery.
+	if err := restorePendingSleepDisabled(); err != nil {
+		return fmt.Errorf("failed to restore pending sleep-disabled state: %w", err)
 	}
 
 	return nil
