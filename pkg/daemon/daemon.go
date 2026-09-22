@@ -102,13 +102,23 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	if configPath != "" {
 		dir := filepath.Dir(configPath)
 		initCalibrationState(filepath.Join(dir, "batt.state.json"))
-		initSleepDisabledState(filepath.Join(dir, "batt.sleep.json"))
+		if err := initSleepDisabledState(filepath.Join(dir, "batt.sleep.json")); err != nil {
+			logrus.WithError(err).Warn("failed to initialize sleep disabled state")
+		}
 	} else {
 		initCalibrationState("/etc/batt.state.json")
-		initSleepDisabledState("/etc/batt.sleep.json")
+		if err := initSleepDisabledState("/etc/batt.sleep.json"); err != nil {
+			logrus.WithError(err).Warn("failed to initialize sleep disabled state")
+		}
 	}
 	disableUnsupportedCalibrationState()
 	restoreCalibrationSleepAssertion()
+
+	if capabilities.AdapterControl {
+		if err := reconcileAdapterSleepPolicy(); err != nil {
+			logrus.WithError(err).Error("failed to reconcile adapter sleep policy during startup")
+		}
+	}
 
 	router := setupRoutes()
 	sseHub = events.NewEventHub()
@@ -253,14 +263,8 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		}
 	}
 
-	if capabilities.AdapterControl {
-		if err := smcConn.EnableAdapter(); err != nil {
-			logrus.Errorf("failed to re-enable adapter before exiting: %v", err)
-		}
-	}
-
-	if err := releaseAllSleepHolds(); err != nil {
-		logrus.Errorf("failed to restore SleepDisabled before exiting: %v", err)
+	if err := shutdownAdapterAndSleep(); err != nil {
+		logrus.Errorf("failed to restore adapter/sleep state before exiting: %v", err)
 	}
 
 	logrus.Info("closing smc connection")
@@ -270,5 +274,24 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	}
 
 	logrus.Info("exiting")
+	return nil
+}
+
+func shutdownAdapterAndSleep() error {
+	if capabilities.AdapterControl {
+		if err := smcEnableAdapter(); err != nil {
+			logrus.Errorf("failed to re-enable adapter before exiting: %v", err)
+			return err
+		}
+		if err := releaseAllSleepHolds(); err != nil {
+			logrus.Errorf("failed to restore SleepDisabled before exiting: %v", err)
+			return err
+		}
+	} else {
+		if err := releaseAllSleepHolds(); err != nil {
+			logrus.Errorf("failed to restore SleepDisabled before exiting: %v", err)
+			return err
+		}
+	}
 	return nil
 }

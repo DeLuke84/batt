@@ -5,12 +5,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	pkgerrors "github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/charlie0129/batt/pkg/config"
+	"github.com/charlie0129/batt/pkg/daemon"
 	"github.com/charlie0129/batt/pkg/smc"
 	daemonutils "github.com/charlie0129/batt/pkg/utils/daemon"
 )
@@ -118,6 +120,13 @@ You must run this command as root.`,
 					err = smcC.EnableAdapter()
 					if err != nil {
 						return fmt.Errorf("failed to enable adapter: %v", err)
+					}
+					sleepStatePath := "/etc/batt.sleep.json"
+					if configPath != "" {
+						sleepStatePath = filepath.Join(filepath.Dir(configPath), "batt.sleep.json")
+					}
+					if err := daemon.RecoverSleepDisabled(sleepStatePath); err != nil {
+						logrus.WithError(err).Warn("failed to restore sleep disabled state during uninstall")
 					}
 				}
 

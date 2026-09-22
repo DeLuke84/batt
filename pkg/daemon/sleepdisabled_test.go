@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/charlie0129/batt/pkg/compatibility"
 )
 
 // fakeSleepSetting replaces the IOKit calls with an in-memory value and records
@@ -68,11 +70,17 @@ func stubAdapter(t *testing.T, enabled bool) *fakeAdapter {
 	previousConf := conf
 	previousIsAdapter := smcIsAdapterEnabled
 	previousCap := capabilities
+	previousEnableAdapter := smcEnableAdapter
+	previousDisableAdapter := smcDisableAdapter
+	smcEnableAdapter = enableAdapterWithSleepPolicy
+	smcDisableAdapter = disableAdapterWithSleepPolicy
 	t.Cleanup(func() {
 		rawDisableAdapter, rawEnableAdapter = previousDisable, previousEnable
 		conf = previousConf
 		smcIsAdapterEnabled = previousIsAdapter
 		capabilities = previousCap
+		smcEnableAdapter = previousEnableAdapter
+		smcDisableAdapter = previousDisableAdapter
 	})
 
 	capabilities.AdapterControl = true
@@ -784,5 +792,61 @@ func TestReconcileAdapterSleepPolicy_RetriesFailedRelease(t *testing.T) {
 	}
 	if sleepHolds[sleepHoldAdapter] {
 		t.Fatal("hold should now be released")
+	}
+}
+
+func TestShutdownAdapterAndSleep_AdapterEnableFailurePreservesHolds(t *testing.T) {
+	previousCap := capabilities
+	t.Cleanup(func() {
+		capabilities = previousCap
+		sleepHolds = map[string]bool{}
+	})
+
+	sleep := stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, true)
+	capabilities = compatibility.Capabilities{AdapterControl: true}
+
+	if err := holdSleep(sleepHoldAdapter); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter.enableErr = errors.New("SMC enable failed")
+
+	if err := shutdownAdapterAndSleep(); err == nil {
+		t.Fatal("expected shutdownAdapterAndSleep to return error when adapter enable fails")
+	}
+
+	if !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("sleep holds must be preserved when adapter enable fails on shutdown")
+	}
+	if !sleep.value {
+		t.Fatal("sleep must remain held when adapter enable fails on shutdown")
+	}
+}
+
+func TestShutdownAdapterAndSleep_SuccessfulEnableReleasesHolds(t *testing.T) {
+	previousCap := capabilities
+	t.Cleanup(func() {
+		capabilities = previousCap
+		sleepHolds = map[string]bool{}
+	})
+
+	sleep := stubSleepDisabled(t, false)
+	stubAdapter(t, true)
+	capabilities = compatibility.Capabilities{AdapterControl: true}
+
+	if err := holdSleep(sleepHoldAdapter); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := shutdownAdapterAndSleep(); err != nil {
+		t.Fatalf("shutdownAdapterAndSleep failed: %v", err)
+	}
+
+	if len(sleepHolds) != 0 {
+		t.Fatalf("sleep holds should be cleared after successful shutdown, got: %v", sleepHolds)
+	}
+	if sleep.value {
+		t.Fatal("sleep setting must be restored after successful shutdown")
 	}
 }
