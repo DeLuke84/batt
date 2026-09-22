@@ -678,12 +678,13 @@ func (f *File) LogrusFields() logrus.Fields {
 	}
 
 	return logrus.Fields{
-		"upperLimit":              f.UpperLimit(),
-		"lowerLimit":              f.LowerLimit(),
-		"preventIdleSleep":        f.PreventIdleSleep(),
-		"disableChargingPreSleep": f.DisableChargingPreSleep(),
-		"preventSystemSleep":      f.PreventSystemSleep(),
-		"allowNonRootAccess":      f.AllowNonRootAccess(),
-		"controlMagsafeLed":       f.ControlMagSafeLED(),
+		"upperLimit":                   f.UpperLimit(),
+		"lowerLimit":                   f.LowerLimit(),
+		"preventIdleSleep":             f.PreventIdleSleep(),
+		"disableChargingPreSleep":      f.DisableChargingPreSleep(),
+		"preventSystemSleep":           f.PreventSystemSleep(),
+		"preventSleepOnAdapterDisable": f.PreventSleepOnAdapterDisable(),
+		"allowNonRootAccess":           f.AllowNonRootAccess(),
+		"controlMagsafeLed":            f.ControlMagSafeLED(),
 	}
 }

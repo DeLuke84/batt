@@ -64,7 +64,7 @@ func NewSetPreventSleepOnAdapterDisableCommand() *cobra.Command {
 
 This option suppresses sleep entirely while the adapter is disabled, so Clamshell mode survives. It uses the SleepDisabled system power setting, the same mechanism as "pmset disablesleep", because power assertions do not cover lid-close sleep.
 
-Note: while the adapter is disabled your Mac will not sleep at all, including when you close the lid on battery. batt restores the previous setting as soon as the adapter is enabled again, and also after a restart if the daemon was killed in between.`,
+WARNING: While the adapter is disabled your Mac will not sleep at all, even with the lid closed. If placed in a bag while unplugged or discharging, it can overheat dangerously or drain the battery to 0%. Use only when monitored. batt restores the previous setting as soon as the adapter is enabled again, and also after a restart if the daemon was killed in between.`,
 		func() (string, error) { return apiClient.SetPreventSleepOnAdapterDisable(true) },
 		func() (string, error) { return apiClient.SetPreventSleepOnAdapterDisable(false) },
 	), compatibility.FeatureAdapterControl)
