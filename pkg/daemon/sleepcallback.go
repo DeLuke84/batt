@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charlie0129/batt/pkg/compatibility"
 	"github.com/charlie0129/batt/pkg/config"
 	"github.com/sirupsen/logrus"
 )
@@ -36,7 +35,7 @@ func canSystemSleepCallback() {
 	   seconds then go to sleep.
 	*/
 	logrus.Debugln("received kIOMessageCanSystemSleep notification, idle sleep is about to kick in")
-	if capabilities.ChargeControlMode != compatibility.ChargeControlLegacy {
+	if !usesActiveChargeControl() {
 		C.AllowPowerChange()
 		return
 	}
@@ -84,7 +83,7 @@ func systemWillSleepCallback() {
 	   kIOReturnSuccess, however the system WILL still go to sleep.
 	*/
 	logrus.Debugln("received kIOMessageSystemWillSleep notification, system will go to sleep")
-	if capabilities.ChargeControlMode != compatibility.ChargeControlLegacy {
+	if !usesActiveChargeControl() {
 		C.AllowPowerChange()
 		return
 	}
@@ -120,9 +119,9 @@ func systemWillSleepCallback() {
 			sleep(preSleepLoopDelaySeconds)
 			wg.Done()
 		}()
-		err := smcConn.DisableCharging()
+		err := charger.Disable()
 		if err != nil {
-			logrus.Errorf("DisableCharging failed: %v", err)
+			logrus.Errorf("pre-sleep charger.Disable failed: %v", err)
 			return
 		}
 		if conf.ControlMagSafeLED() != config.ControlMagSafeModeDisabled {
@@ -147,7 +146,7 @@ func systemWillPowerOnCallback() {
 func systemHasPoweredOnCallback() {
 	// System has finished waking up...
 	logrus.Debugln("received kIOMessageSystemHasPoweredOn notification, system has finished waking up")
-	if capabilities.ChargeControlMode != compatibility.ChargeControlLegacy {
+	if !usesActiveChargeControl() {
 		return
 	}
 	lastWakeTime = time.Now()

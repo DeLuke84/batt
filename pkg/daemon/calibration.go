@@ -11,7 +11,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/charlie0129/batt/pkg/calibration"
-	"github.com/charlie0129/batt/pkg/compatibility"
 	"github.com/charlie0129/batt/pkg/events"
 )
 
@@ -68,23 +67,23 @@ func calibrationNeedsMaintainLoop() bool {
 }
 
 func enableChargingForCalibration() error {
-	if capabilities.ChargeControlMode == compatibility.ChargeControlFirmware {
-		_, err := smcConn.EnsureFirmwareChargeLimitDisabled()
+	if isManagedChargeControl() {
+		_, err := ensureManagedChargeLimitDisabled()
 		return err
 	}
 	return smcEnableCharging()
 }
 
 func restoreChargeControlAfterCalibration(st *calibration.State) {
-	if capabilities.ChargeControlMode == compatibility.ChargeControlFirmware {
+	if isManagedChargeControl() {
 		var err error
 		if st.SnapshotMaintain {
-			_, err = smcConn.EnsureFirmwareChargeLimit(st.SnapshotLowerLimit, st.SnapshotUpperLimit)
+			_, err = ensureManagedChargeLimit(st.SnapshotLowerLimit, st.SnapshotUpperLimit)
 		} else {
-			_, err = smcConn.EnsureFirmwareChargeLimitDisabled()
+			_, err = ensureManagedChargeLimitDisabled()
 		}
 		if err != nil {
-			logrus.WithError(err).Error("failed to restore firmware charge limit after calibration")
+			logrus.WithError(err).Errorf("failed to restore %s charge limit after calibration", capabilities.ChargeControlMode)
 		}
 		return
 	}
@@ -178,7 +177,7 @@ func startCalibration(threshold, holdMinutes int) error {
 	upper := conf.UpperLimit()
 	lower := conf.LowerLimit()
 	chargingEnabled := true
-	if capabilities.ChargeControlMode != compatibility.ChargeControlFirmware {
+	if !isManagedChargeControl() {
 		chargingEnabled, _ = smcIsChargingEnabled()
 	}
 	adapterEnabled, _ := smcIsAdapterEnabled()

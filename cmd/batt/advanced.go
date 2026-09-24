@@ -25,6 +25,18 @@ However, this options does not prevent manual sleep (limitation of macOS). For e
 	), compatibility.FeatureSleepHooks)
 }
 
+func NewAdapterModeCommand() *cobra.Command {
+	return newEnableDisableCommand(
+		"adapter-mode",
+		"Enable adapter charging control mode",
+		`Enable adapter charging control mode.
+
+When the SMC charge-control keys are gated (macOS 27 firmware), batt can hold the limit by cutting wall power, running on battery between the lower and upper limits. It is opt-in for that reason and takes effect immediately.`,
+		func() (string, error) { return apiClient.SetAdapterMode(true) },
+		func() (string, error) { return apiClient.SetAdapterMode(false) },
+	)
+}
+
 func NewSetDisableChargingPreSleepCommand() *cobra.Command {
 	return annotateCapability(newEnableDisableCommand(
 		"disable-charging-pre-sleep",

@@ -49,6 +49,12 @@ func setLimit(c *gin.Context) {
 		_ = c.AbortWithError(http.StatusBadRequest, err)
 		return
 	}
+	if !capabilities.SupportsLimit(l) {
+		err := fmt.Errorf("this Mac only offers charge limits of %s, got %d", compatibility.FormatLimits(capabilities.SupportedLimits), l)
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		_ = c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
 
 	chargeControlTransitionMu.Lock()
 	defer chargeControlTransitionMu.Unlock()
@@ -86,9 +92,12 @@ func setLimit(c *gin.Context) {
 	} else {
 		msg = fmt.Sprintf("set upper/lower charging limit to %d%%/%d%%, current charge: %d%%", conf.UpperLimit(), conf.LowerLimit(), charge)
 		if charge > conf.UpperLimit() {
-			if capabilities.ChargeControlMode == compatibility.ChargeControlFirmware {
-				msg += ". Current charge is above the limit; the firmware may use battery power until it falls within the configured range."
-			} else {
+			switch {
+			case isManagedChargeControl():
+				msg += ". Current charge is above the limit; macOS may use battery power until it falls within the configured range."
+			case capabilities.ChargeControlMode == compatibility.ChargeControlAdapter:
+				msg += ". Current charge is above the limit, so batt will cut wall power and run from the battery until it drops to the lower limit."
+			default:
 				msg += ". Current charge is above the limit, so your computer will use power from the wall only. Battery charge will remain the same."
 			}
 		}
@@ -443,7 +452,7 @@ func getBatteryInfo(c *gin.Context) {
 }
 
 func setLowerLimitDelta(c *gin.Context) {
-	if !requireCapability(c, compatibility.FeatureChargingControl) {
+	if !requireCapability(c, compatibility.FeatureLowerLimit) {
 		return
 	}
 	var d int
@@ -540,7 +549,22 @@ func getPluggedIn(c *gin.Context) {
 }
 
 func getChargingControlCapable(c *gin.Context) {
-	c.IndentedJSON(http.StatusOK, smcConn.IsChargingControlCapable())
+	c.IndentedJSON(http.StatusOK, capabilities.ChargingControl)
+}
+
+func setAdapterMode(c *gin.Context) {
+	var enabled bool
+	if err := c.BindJSON(&enabled); err != nil {
+		c.IndentedJSON(http.StatusBadRequest, err.Error())
+		return
+	}
+	conf.SetAdapterMode(enabled)
+	if err := conf.Save(); err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, err.Error())
+		return
+	}
+	reapplyChargeControlMode()
+	c.IndentedJSON(http.StatusCreated, fmt.Sprintf("adapter mode set to %t, charge control is now %s", enabled, capabilities.ChargeControlMode))
 }
 
 func getVersion(c *gin.Context) {
