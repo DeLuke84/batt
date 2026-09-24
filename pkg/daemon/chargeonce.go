@@ -137,14 +137,17 @@ func startChargeOnce(target, charge int) error {
 		return err
 	}
 
+	return nil
+}
+
+// reportChargeOnceStarted runs only after the immediate enforcement succeeds.
+func reportChargeOnceStarted(target, charge int) {
 	logrus.WithFields(logrus.Fields{
 		"target":             target,
 		"charge":             charge,
 		chargeOnceLimitField: conf.UpperLimit(),
 	}).Info("started a one-time charge")
-
 	publishChargeOnceEvent(chargeOnceActionStart, target, chargeOnceStartedMessage(target, charge, conf.UpperLimit()))
-	return nil
 }
 
 // cancelChargeOnce stops a running one-time charge and returns its target. The

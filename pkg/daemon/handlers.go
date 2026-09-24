@@ -606,19 +606,37 @@ func setAdapterMode(c *gin.Context) {
 	defer chargeControlTransitionMu.Unlock()
 
 	previous := conf.AdapterMode()
+	previousTarget := conf.ChargeOnceTarget()
 	conf.SetAdapterMode(enabled)
+	// Native macOS cannot force a one-time target below 100%. Cancel such an
+	// adapter-mode target in the same config update as the mode change.
+	clearTarget := previousTarget > 0 && previousTarget < 100 &&
+		capabilities.ChargeControlMode == compatibility.ChargeControlAdapter &&
+		detectCapabilities().ChargeControlMode == compatibility.ChargeControlNative
+	if clearTarget {
+		conf.ClearChargeOnceTarget()
+	}
 	if err := conf.Save(); err != nil {
 		conf.SetAdapterMode(previous)
+		if clearTarget {
+			conf.SetChargeOnceTarget(previousTarget)
+		}
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := reapplyChargeControlMode(); err != nil {
 		conf.SetAdapterMode(previous)
+		if clearTarget {
+			conf.SetChargeOnceTarget(previousTarget)
+		}
 		if saveErr := conf.Save(); saveErr != nil {
 			err = fmt.Errorf("%w; failed to save adapter mode rollback: %v", err, saveErr)
 		}
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		return
+	}
+	if clearTarget {
+		reportSupersededChargeOnce(previousTarget, "adapter mode disabled")
 	}
 	c.IndentedJSON(http.StatusCreated, fmt.Sprintf("adapter mode set to %t, charge control is now %s", enabled, capabilities.ChargeControlMode))
 }
@@ -807,26 +825,57 @@ func startChargeOnceRequest(c *gin.Context, full bool) {
 	}
 
 	// Adapter mode must not inherit a native macOS limit from a previous mode
-	// or reboot: that ceiling would prevent a one-time charge from progressing.
+	// or reboot. Remember the previous value in case admission fails.
+	var nativePreviousLimit int
+	var nativePreviouslyEnabled bool
 	if capabilities.ChargeControlMode == compatibility.ChargeControlAdapter && nativeLimit.Supported() {
-		if _, err := ensureNativeChargeLimitDisabled(); err != nil {
+		var err error
+		nativePreviousLimit, nativePreviouslyEnabled, err = nativeLimit.Limit()
+		if err == nil {
+			_, err = ensureNativeChargeLimitDisabled()
+		}
+		if err != nil {
 			c.IndentedJSON(http.StatusInternalServerError, err.Error())
 			_ = c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}
 	}
+	restoreNativeLimit := func() error {
+		if nativePreviouslyEnabled {
+			return nativeLimit.SetLimit(nativePreviousLimit)
+		}
+		return nil
+	}
 
 	message := chargeOnceStartedMessage(target, charge, conf.UpperLimit())
 	if err := startChargeOnce(target, charge); err != nil {
-		logrus.Errorf("saveConfig failed: %v", err)
+		if restoreErr := restoreNativeLimit(); restoreErr != nil {
+			err = fmt.Errorf("%w; failed to restore native limit: %v", err, restoreErr)
+		}
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		_ = c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	// Immediate single maintain loop, to avoid waiting for the next loop
-	maintainLoopForced()
-
+	// A successful API response requires the first enforcement pass to work.
+	if !maintainLoopForced() {
+		conf.ClearChargeOnceTarget()
+		if err := conf.Save(); err != nil {
+			conf.SetChargeOnceTarget(target)
+			err = fmt.Errorf("failed to enforce one-time charge and roll back target: %w", err)
+			c.IndentedJSON(http.StatusInternalServerError, err.Error())
+			_ = c.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
+		err := fmt.Errorf("failed to enforce one-time charge")
+		if restoreErr := restoreNativeLimit(); restoreErr != nil {
+			err = fmt.Errorf("%w; failed to restore native limit: %v", err, restoreErr)
+		}
+		c.IndentedJSON(http.StatusInternalServerError, err.Error())
+		_ = c.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+	reportChargeOnceStarted(target, charge)
 	c.IndentedJSON(http.StatusCreated, message)
 }
 

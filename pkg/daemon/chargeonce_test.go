@@ -97,12 +97,22 @@ func TestChargeOnceStartedMessage(t *testing.T) {
 	}
 }
 
+func useChargeOnceLegacyAdmissionSMC(t *testing.T, charge int) {
+	t.Helper()
+	previousSMC, previousCharger := smcConn, charger
+	t.Cleanup(func() { smcConn, charger = previousSMC, previousCharger })
+	smcConn = legacyChargeMock(t, charge, false)
+	charger = chargeKeySwitch{}
+	capabilities.ChargeControlMode = compatibility.ChargeControlLegacy
+}
+
 func TestStartChargeOnceToLimitInsideHysteresisGap(t *testing.T) {
 	// 58% with a persistent 40-70% band: the charge sits in the gap where batt
 	// normally waits, so this is the case the feature exists for.
 	configured := &mockConf{upper: 70, lower: 40}
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 	stubBatteryCharge(t, 58)
+	useChargeOnceLegacyAdmissionSMC(t, 58)
 
 	response := postChargeOnce(chargeOnceLimitPath)
 	if response.Code != http.StatusCreated {
@@ -120,6 +130,7 @@ func TestStartChargeOnceToFullKeepsConfiguredLimit(t *testing.T) {
 	configured := &mockConf{upper: 70, lower: 68}
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 	stubBatteryCharge(t, 70)
+	useChargeOnceLegacyAdmissionSMC(t, 70)
 
 	response := postChargeOnce(chargeOnceFullPath)
 	if response.Code != http.StatusCreated {
@@ -560,6 +571,24 @@ func TestAdapterModeOneTimeChargeRestoresWallPower(t *testing.T) {
 	}
 }
 
+func TestAdapterChargeOnceAdmissionFailureRestoresNativeLimit(t *testing.T) {
+	configured := &mockConf{upper: 80, lower: 78}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	capabilities = compatibility.Capabilities{ChargingControl: true, ChargeControlMode: compatibility.ChargeControlAdapter}
+	gatedSMC(t)              // adapter key works, but maintain cannot read battery charge
+	stubBatteryCharge(t, 60) // admission can read it through the test seam
+	previousCharger := charger
+	t.Cleanup(func() { charger = previousCharger })
+	charger = adapterSwitch{}
+	fake := &fakeNativeLimit{supported: true, limit: 80, enabled: true}
+	useFakeNativeLimit(t, fake)
+
+	response := postChargeOnce(chargeOnceFullPath)
+	if response.Code != http.StatusInternalServerError || configured.chargeOnceTarget != 0 || !fake.enabled || fake.limit != 80 {
+		t.Fatalf("failed adapter enforcement must restore native limit and target: status=%d, target=%d, native=%+v", response.Code, configured.chargeOnceTarget, fake)
+	}
+}
+
 func TestNativeChargeOnceToFullUsesNativeLimit(t *testing.T) {
 	configured := &mockConf{upper: 80, lower: 78}
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
@@ -916,6 +945,7 @@ func TestStartChargeOnceChecksThePowerAdapter(t *testing.T) {
 			useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 			capabilities = compatibility.Capabilities{ChargingControl: true, AdapterControl: tt.adapterControl}
 			stubBatteryCharge(t, 58)
+			useChargeOnceLegacyAdmissionSMC(t, 58)
 			asked := stubAdapterEnabled(t, tt.adapterEnabled, tt.adapterErr)
 
 			response := postChargeOnce(path)

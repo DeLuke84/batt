@@ -376,6 +376,33 @@ func TestLeavingAdapterModeRequiresWallPowerRestore(t *testing.T) {
 	}
 }
 
+func TestLeavingAdapterModeCancelsUnsupportedOneTimeTarget(t *testing.T) {
+	gatedSMC(t)
+	file, path := useTempConfig(t)
+	file.SetAdapterMode(true)
+	file.SetChargeOnceTarget(80)
+	if err := file.Save(); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeNativeLimit{supported: true, limits: []int{80, 85, 90, 95, 100}, limit: 80, enabled: true}
+	useFakeNativeLimit(t, fake)
+	previousCap, previousCharger := capabilities, charger
+	t.Cleanup(func() { capabilities, charger = previousCap, previousCharger })
+	capabilities = compatibility.Capabilities{ChargingControl: true, ChargeControlMode: compatibility.ChargeControlAdapter}
+	charger = adapterSwitch{}
+
+	request := httptest.NewRequest(http.MethodPut, "/adapter-mode", strings.NewReader("false"))
+	response := httptest.NewRecorder()
+	setupRoutes().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || file.AdapterMode() || file.ChargeOnceTarget() != 0 || capabilities.ChargeControlMode != compatibility.ChargeControlNative {
+		t.Fatalf("native transition must drop unsupported target: status=%d, mode=%s, target=%d", response.Code, capabilities.ChargeControlMode, file.ChargeOnceTarget())
+	}
+	reloaded, err := config.NewFile(path)
+	if err != nil || reloaded.ChargeOnceTarget() != 0 {
+		t.Fatalf("unsupported target must be cleared on disk: config=%v, err=%v", reloaded, err)
+	}
+}
+
 func TestResetChargeControlNative(t *testing.T) {
 	useNativeCapabilities(t, 80, 100)
 	fake := &fakeNativeLimit{limit: 80, enabled: true}
