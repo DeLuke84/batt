@@ -60,6 +60,12 @@ func TestCanShowPreventSleepOnAdapterDisable(t *testing.T) {
 			want:         true,
 		},
 		{
+			name:         "adapter mode without manual adapter controls",
+			installed:    true,
+			capabilities: compatibility.Capabilities{ChargingControl: true, ChargeControlMode: compatibility.ChargeControlAdapter},
+			want:         true,
+		},
+		{
 			name:         "not installed",
 			installed:    false,
 			capabilities: compatibility.Capabilities{ChargingControl: true, AdapterControl: true},

@@ -35,6 +35,7 @@ func (m *mockConf) DisableChargingPreSleep() bool      { return false }
 func (m *mockConf) PreventSystemSleep() bool           { return false }
 func (m *mockConf) PreventSleepOnAdapterDisable() bool { return m.preventSleepOnAdapterDisable }
 func (m *mockConf) AllowNonRootAccess() bool           { return false }
+func (m *mockConf) AdapterMode() bool                  { return false }
 func (m *mockConf) ControlMagSafeLED() config.ControlMagSafeMode {
 	return config.ControlMagSafeModeDisabled
 }
@@ -49,6 +50,7 @@ func (m *mockConf) SetDisableChargingPreSleep(bool)                {}
 func (m *mockConf) SetPreventSleepOnAdapterDisable(b bool)         { m.preventSleepOnAdapterDisable = b }
 func (m *mockConf) SetPreventSystemSleep(bool)                     {}
 func (m *mockConf) SetAllowNonRootAccess(bool)                     {}
+func (m *mockConf) SetAdapterMode(bool)                            {}
 func (m *mockConf) SetControlMagSafeLED(config.ControlMagSafeMode) {}
 func (m *mockConf) LogrusFields() logrus.Fields                    { return logrus.Fields{} }
 func (m *mockConf) Load() error                                    { return nil }

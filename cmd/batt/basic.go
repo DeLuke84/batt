@@ -46,7 +46,9 @@ func NewLimitCommand() *cobra.Command {
 
 This is a percentage from 10 to 100.
 
-Setting the limit to 10-99 will enable the battery charge limit. However, setting the limit to 100 will disable the battery charge limit, which is the default behavior of macOS.`,
+Setting the limit to 10-99 will enable the battery charge limit. However, setting the limit to 100 will disable the battery charge limit, which is the default behavior of macOS.
+
+Some Macs only offer a fixed set of limits (for example 80, 85, 90, 95 and 100 on macOS 27 firmware, where batt drives the charge limit built into macOS). Run 'batt status' to see them; other values are rejected.`,
 		RunE: func(_ *cobra.Command, args []string) error {
 			limit, err := parseIntArg(args, "limit")
 			if err != nil {
@@ -266,5 +268,5 @@ For example, if you want to set the lower limit to be 5% less than the upper lim
 		},
 	}
 
-	return annotateCapability(cmd, compatibility.FeatureChargingControl)
+	return annotateCapability(cmd, compatibility.FeatureLowerLimit)
 }

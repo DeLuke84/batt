@@ -62,7 +62,7 @@ Check your firmware version by running `system_profiler SPHardwareDataType | gre
 | `118xx.x.x`               | macOS 15 Sequoia     | ✅   | ✅              | ✅                       |                                    |
 | `138xx.x.x` / `18xxx.x.x` | macOS 26 Tahoe       | ✅   | ✅              | ✅                       |                                    |
 | `20356.0.0.0.15` ~ `20457.0.77.0.2`               | macOS 27 Golden Gate Developer Beta 1~3 | ✅   | ✅              | ✅                       | Firmware-managed limits; see below |
-| `20457.0.125.0.2`+ | macOS 27 Golden Gate Developer Beta 4 | ❌   | ❌     | ❌       |  |
+| `20457.0.125.0.2`+ | macOS 27 Golden Gate Developer Beta 4+ | ✅   | ✅     | ✅       | Charge keys gated; adapter mode. Any limit, incl. below 80%. See below |
 | Other                     | Unknown              | ❓   | ❓              | ❓                       |                                    |
 
 - ❌: Unsupported
@@ -90,6 +90,29 @@ This mode has several intentional differences and current limitations:
 - Legacy sleep options are unavailable and unnecessary. Incompatible values left in the configuration after an upgrade are disabled by the daemon.
 
 The daemon reports these capabilities to current CLI and GUI clients. Older daemons that do not provide detailed compatibility data retain the previous permissive client behavior.
+
+### macOS 27 firmware with gated charge keys (adapter mode)
+
+Starting with macOS 27 Developer Beta 4 (firmware `20457.0.125.0.2`+, also shipped in some macOS 15.x / 26.x security updates), Apple gated the SMC charge-control keys behind a private entitlement (`com.apple.private.iokit.soc-limit`). Both the legacy keys (`CH0B`/`CH0C`/`CHTE`) and the firmware-limit keys (`bfF0`/`bfD0`/`bfE0`) now return `kIOReturnNotPrivileged` even to root, so neither the legacy nor the firmware backend works. See [#152](https://github.com/charlie0129/batt/issues/152).
+
+The macOS charge limit built into System Settings still works, but it is enforced by `powerd` behind that entitlement and only offers a fixed set of values **at or above 80%**.
+
+To keep charge limiting working, including limits **below 80%**, `batt` offers an opt-in **adapter mode**, enabled at runtime with `sudo batt adapter-mode enable`. The adapter (wall-power) SMC key is not entitlement-gated, so `batt` runs the same ThinkPad-style hysteresis loop it uses in legacy mode, but toggles wall power instead of the charge state:
+
+- When the battery reaches the upper limit, `batt` cuts wall power (the Mac runs from the battery, even though the adapter is physically plugged in), so the charge falls.
+- When the battery drops to the lower limit, `batt` restores wall power and the Mac charges again.
+
+This accepts any upper limit from 10 to 100 and supports the lower-limit delta, exactly like legacy mode.
+
+Intentional differences and limitations in adapter mode:
+
+- The limit is enforced only while `batt` is awake. Just before sleep `batt` restores/holds a safe state (charging is disabled pre-sleep by default) to avoid overcharging while asleep; the sleep options apply as in legacy mode.
+- In Clamshell mode (lid closed with an external display), cutting wall power makes the Mac sleep unless `batt prevent-sleep-on-adapter-disable` is enabled. This opt-in setting also applies to adapter mode; it prevents all system sleep while wall power is cut. See [Prevent sleep when adapter is disabled](#prevent-sleep-when-adapter-is-disabled) for safety warnings.
+- Because `batt` owns the adapter to enforce the limit, the manual `batt adapter` / GUI Force Discharge feature and auto-calibration are disabled in this mode.
+- MagSafe LED control is unavailable, because `batt` does not toggle the charge state directly.
+- If the SMC charge keys are gated **and** the adapter key is unavailable, `batt` uses the native macOS limit instead (80% and above only), driven through PowerUIAgent.
+
+`batt` selects the backend automatically at runtime from which SMC keys and services are usable; it does not branch on the reported macOS or firmware version.
 
 ## Installation (GUI Version)
 
@@ -329,7 +352,7 @@ To enable this feature, run `sudo batt prevent-system-sleep enable`. To disable,
 > [!WARNING]
 > This is an advanced, opt-in feature. When enabled, your Mac will not sleep at all while the adapter is disabled, even with the lid closed. If placed in a bag while discharging, your Mac can dangerously overheat or drain its battery to 0%. Always monitor your Mac while using this feature, and prefer timed discharge over indefinite discharge.
 
-Disabling the power adapter makes macOS behave as if the power cord was unplugged. In Clamshell mode (using a MacBook with an external display and the lid closed), macOS ends Clamshell mode when power is cut, causing your external display and Mac to sleep immediately. This affects both manual force discharge (`batt adapter disable`) and the discharge phases of Auto Calibration.
+Disabling the power adapter makes macOS behave as if the power cord was unplugged. In Clamshell mode (using a MacBook with an external display and the lid closed), macOS ends Clamshell mode when power is cut, causing your external display and Mac to sleep immediately. This affects manual force discharge (`batt adapter disable`), the discharge phases of Auto Calibration, and charge limiting in adapter mode.
 
 This option suppresses system sleep entirely while the adapter is disabled by temporarily setting the global macOS `SleepDisabled` power setting (equivalent to `pmset disablesleep 1`), keeping Clamshell mode alive.
 
@@ -602,4 +625,4 @@ No. batt only works when macOS is running. After shutdown, there is no way to co
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=charlie0129/batt&type=Date)](https://www.star-history.com/#charlie0129/batt&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=charlie0129/batt&type=Date)](https://star-history.dera.page/#charlie0129/batt&Date)

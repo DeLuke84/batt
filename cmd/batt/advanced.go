@@ -25,6 +25,18 @@ However, this options does not prevent manual sleep (limitation of macOS). For e
 	), compatibility.FeatureSleepHooks)
 }
 
+func NewAdapterModeCommand() *cobra.Command {
+	return newEnableDisableCommand(
+		"adapter-mode",
+		"Enable adapter charging control mode",
+		`Enable adapter charging control mode.
+
+When the SMC charge-control keys are gated (macOS 27 firmware), batt can hold the limit by cutting wall power, running on battery between the lower and upper limits. It is opt-in for that reason and takes effect immediately.`,
+		func() (string, error) { return apiClient.SetAdapterMode(true) },
+		func() (string, error) { return apiClient.SetAdapterMode(false) },
+	)
+}
+
 func NewSetDisableChargingPreSleepCommand() *cobra.Command {
 	return annotateCapability(newEnableDisableCommand(
 		"disable-charging-pre-sleep",
@@ -60,14 +72,14 @@ func NewSetPreventSleepOnAdapterDisableCommand() *cobra.Command {
 	return annotateCapability(newEnableDisableCommand(
 		"prevent-sleep-on-adapter-disable",
 		"Keep the Mac awake while the power adapter is disabled (experimental)",
-		`Disabling the power adapter makes macOS behave as if the power cord was unplugged. In Clamshell mode (lid closed, external display attached) macOS then ends Clamshell mode and your external display goes to sleep immediately. This affects both "batt adapter disable" and the discharge phases of auto calibration.
+		`Disabling the power adapter makes macOS behave as if the power cord was unplugged. In Clamshell mode (lid closed, external display attached) macOS then ends Clamshell mode and your external display goes to sleep immediately. This affects "batt adapter disable", the discharge phases of auto calibration, and charge limiting in adapter mode.
 
 This option suppresses sleep entirely while the adapter is disabled, so Clamshell mode survives. It uses the SleepDisabled system power setting, the same mechanism as "pmset disablesleep", because power assertions do not cover lid-close sleep.
 
 WARNING: While the adapter is disabled your Mac will not sleep at all, even with the lid closed. If placed in a bag while unplugged or discharging, it can overheat dangerously or drain the battery to 0%. Use only when monitored. batt restores the previous setting as soon as the adapter is enabled again, and also after a restart if the daemon was killed in between.`,
 		func() (string, error) { return apiClient.SetPreventSleepOnAdapterDisable(true) },
 		func() (string, error) { return apiClient.SetPreventSleepOnAdapterDisable(false) },
-	), compatibility.FeatureAdapterControl)
+	), compatibility.FeatureAdapterSleepPolicy)
 }
 
 func NewSetControlMagSafeLEDCommand() *cobra.Command {

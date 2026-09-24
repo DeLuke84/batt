@@ -23,6 +23,13 @@ var (
 	continuousLoopThreshold = 1*time.Minute + 20*time.Second // add 20s to be sure
 )
 
+// adapterMinBand is the minimum hysteresis band (upper - lower) enforced in
+// adapter mode. Cutting wall power can only hold a ceiling by discharging and
+// recharging, so a narrow band would cycle the battery and rewrite the SMC
+// often. This floor only ever widens the band (lets the battery roam a little
+// lower); it never raises the ceiling, so the limit is always respected.
+const adapterMinBand = 5
+
 // infiniteLoop runs forever and maintains the battery charge,
 // which is called by the daemon.
 func infiniteLoop() {
@@ -31,7 +38,7 @@ func infiniteLoop() {
 		if restoreDisabledLimit(conf, now) {
 			maintainLoopForced()
 		}
-		if capabilities.AdapterControl {
+		if adapterSleepPolicyCapable() {
 			maintainAdapterDisable(conf, now)
 		}
 		maintainLoop()
@@ -122,6 +129,11 @@ func restoreDisabledLimit(conf config.Config, now time.Time) bool {
 		}
 		return false
 	}
+	if !capabilities.SupportsLimit(limit) {
+		snapped := capabilities.NearestSupportedLimit(limit)
+		logrus.WithFields(logrus.Fields{"saved": limit, "limit": snapped}).Warn("saved charge limit is not offered by this Mac, restoring the next supported limit")
+		limit = snapped
+	}
 
 	conf.SetUpperLimit(limit)
 	if err := conf.Save(); err != nil {
@@ -179,7 +191,7 @@ func checkMissedMaintainLoops(logStatus bool) bool {
 // prevent parallel runs. So if one maintain loop is already running,
 // the next one will need to wait until the first one finishes.
 func maintainLoop() bool {
-	if capabilities.ChargeControlMode != compatibility.ChargeControlLegacy {
+	if isManagedChargeControl() {
 		return maintainLoopForced()
 	}
 
@@ -219,7 +231,7 @@ func maintainLoopForced() bool {
 func handleNoMaintain(isChargingEnabled bool) bool {
 	if !isChargingEnabled {
 		logrus.Debug("limit set to 100%, but charging is disabled, enabling")
-		err := smcConn.EnableCharging()
+		err := charger.Enable()
 		if err != nil {
 			logrus.Errorf("EnableCharging failed: %v", err)
 			return false
@@ -315,7 +327,7 @@ func handleChargingLogic(ignoreMissedLoops, isChargingEnabled, isPluggedIn bool,
 			"lower":         lower,
 			"upper":         upper,
 		}).Infof("Too many missed maintain loops detected while charging is enabled. Disabling charging to prevent overcharging.")
-		err := smcConn.DisableCharging()
+		err := charger.Disable()
 		if err != nil {
 			logrus.Errorf("DisableCharging failed: %v", err)
 			return false
@@ -346,7 +358,7 @@ func handleChargingLogic(ignoreMissedLoops, isChargingEnabled, isPluggedIn bool,
 			"lower":         lower,
 			"upper":         upper,
 		}).Infof("Battery charge is below lower limit, enabling charging")
-		err := smcConn.EnableCharging()
+		err := charger.Enable()
 		if err != nil {
 			logrus.Errorf("EnableCharging failed: %v", err)
 			return false
@@ -362,7 +374,7 @@ func handleChargingLogic(ignoreMissedLoops, isChargingEnabled, isPluggedIn bool,
 			"lower":         lower,
 			"upper":         upper,
 		}).Infof("Battery charge is above upper limit, disabling charging")
-		err := smcConn.DisableCharging()
+		err := charger.Disable()
 		if err != nil {
 			logrus.Errorf("DisableCharging failed: %v", err)
 			return false
@@ -405,20 +417,21 @@ func maintainLoopInner(ignoreMissedLoops bool) bool {
 	defer maintainLoopInnerLock.Unlock()
 
 	switch capabilities.ChargeControlMode {
-	case compatibility.ChargeControlFirmware:
-		return maintainFirmwareChargeLimit()
-	case compatibility.ChargeControlLegacy:
-		return maintainLegacyCharging(ignoreMissedLoops)
+	case compatibility.ChargeControlFirmware, compatibility.ChargeControlNative:
+		return maintainManagedChargeLimit()
+	case compatibility.ChargeControlLegacy, compatibility.ChargeControlAdapter:
+		return maintainActiveCharging(ignoreMissedLoops)
 	default:
 		maintainedChargingInProgress = false
 		return false
 	}
 }
 
-// maintainFirmwareChargeLimit delegates hysteresis enforcement to the
-// firmware. It deliberately does not read battery/charging state or interact
-// with sleep, MagSafe, adapter, or calibration features.
-func maintainFirmwareChargeLimit() bool {
+// maintainManagedChargeLimit delegates hysteresis enforcement to Apple (the
+// firmware or macOS's built-in limit). It deliberately does not read
+// battery/charging state or interact with sleep, MagSafe, adapter, or
+// calibration features.
+func maintainManagedChargeLimit() bool {
 	if calibrationNeedsMaintainLoop() {
 		batteryCharge, err := smcConn.GetBatteryCharge()
 		if err != nil {
@@ -432,43 +445,52 @@ func maintainFirmwareChargeLimit() bool {
 
 	upper := conf.UpperLimit()
 	if upper >= 100 {
-		changed, err := smcConn.EnsureFirmwareChargeLimitDisabled()
+		changed, err := ensureManagedChargeLimitDisabled()
 		if err != nil {
-			logrus.Errorf("failed to deactivate firmware charge limit: %v", err)
+			logrus.Errorf("failed to deactivate %s charge limit: %v", capabilities.ChargeControlMode, err)
 			return false
 		}
 		if changed {
-			logrus.Info("deactivated firmware charge limit")
+			logrus.Infof("deactivated %s charge limit", capabilities.ChargeControlMode)
 		}
 		maintainedChargingInProgress = false
 		return true
 	}
 
 	lower := conf.LowerLimit()
-	changed, err := smcConn.EnsureFirmwareChargeLimit(lower, upper)
+	changed, err := ensureManagedChargeLimit(lower, upper)
 	if err != nil {
-		logrus.Errorf("failed to reconcile firmware charge limit: %v", err)
+		logrus.Errorf("failed to reconcile %s charge limit: %v", capabilities.ChargeControlMode, err)
 		return false
 	}
 	if changed {
-		logrus.WithFields(logrus.Fields{"lower": lower, "upper": upper}).Info("reconciled firmware charge limit")
+		logrus.WithFields(logrus.Fields{"lower": lower, "upper": upper}).Infof("reconciled %s charge limit", capabilities.ChargeControlMode)
 	} else {
-		logrus.WithFields(logrus.Fields{"lower": lower, "upper": upper}).Trace("firmware charge limit is correct")
+		logrus.WithFields(logrus.Fields{"lower": lower, "upper": upper}).Tracef("%s charge limit is correct", capabilities.ChargeControlMode)
 	}
 	maintainedChargingInProgress = false
 	return true
 }
 
-// maintainLegacyCharging contains the original batt-managed charge loop.
-func maintainLegacyCharging(ignoreMissedLoops bool) bool {
+// maintainActiveCharging is the batt-managed hysteresis loop, shared by the
+// legacy (charge-key) and adapter (wall-power) backends. The only difference
+// between them is the charge switch it toggles.
+func maintainActiveCharging(ignoreMissedLoops bool) bool {
 
 	upper := conf.UpperLimit()
 	lower := conf.LowerLimit()
+	// Adapter mode holds the ceiling by discharging on battery and recharging,
+	// so keep a gentle minimum band to avoid frequent cycling and SMC writes.
+	if capabilities.ChargeControlMode == compatibility.ChargeControlAdapter {
+		if minLower := upper - adapterMinBand; upper < 100 && lower > minLower && minLower >= 0 {
+			lower = minLower
+		}
+	}
 	maintain := upper < 100
 
-	isChargingEnabled, err := smcConn.IsChargingEnabled()
+	isChargingEnabled, err := charger.IsEnabled()
 	if err != nil {
-		logrus.Errorf("IsChargingEnabled failed: %v", err)
+		logrus.Errorf("charger.IsEnabled failed: %v", err)
 		return false
 	}
 
@@ -504,6 +526,15 @@ func maintainLegacyCharging(ignoreMissedLoops bool) bool {
 	// If maintain is disabled, we don't care about the battery charge, enable charging anyway.
 	if !maintain {
 		return handleNoMaintain(isChargingEnabled)
+	}
+
+	// Adapter mode can only enforce the limit while on wall power. When running
+	// from the battery there is nothing to cut or restore, so leave the adapter
+	// untouched and wait for reconnection instead of writing the SMC pointlessly.
+	// The next loop after reconnection resumes enforcement.
+	if capabilities.ChargeControlMode == compatibility.ChargeControlAdapter && !isPluggedIn {
+		maintainedChargingInProgress = false
+		return true
 	}
 
 	return handleChargingLogic(ignoreMissedLoops, isChargingEnabled, isPluggedIn, batteryCharge, lower, upper)

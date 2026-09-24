@@ -254,7 +254,7 @@ func (c *menuController) setStateError(message string, err error) {
 }
 
 func canShowPreventSleepOnAdapterDisable(installed bool, capabilities compatibility.Capabilities, needsUpgrade bool) bool {
-	return installed && capabilities.ChargingControl && !needsUpgrade && capabilities.AdapterControl
+	return installed && capabilities.ChargingControl && !needsUpgrade && capabilities.Supports(compatibility.FeatureAdapterSleepPolicy)
 }
 
 func (c *menuController) setCompatibility(installed bool, capabilities compatibility.Capabilities, needsUpgrade bool) {
@@ -272,7 +272,8 @@ func (c *menuController) setCompatibility(installed bool, capabilities compatibi
 	c.menu.setHidden(itemCurrentLimit, !installed || !capabilities.ChargingControl)
 	c.menu.setHidden(itemQuickLimits, !usable)
 	for _, item := range quickLimitItems {
-		c.menu.setHidden(item, !usable)
+		// macOS only offers a fixed set of limits on some firmware.
+		c.menu.setHidden(item, !usable || !capabilities.SupportsLimit(quickLimitForItem(item)))
 	}
 
 	c.menu.setHidden(itemAdvanced, !installed)

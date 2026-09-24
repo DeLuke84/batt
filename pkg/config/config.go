@@ -14,6 +14,7 @@ type Config interface {
 	PreventSystemSleep() bool
 	PreventSleepOnAdapterDisable() bool
 	AllowNonRootAccess() bool
+	AdapterMode() bool
 	ControlMagSafeLED() ControlMagSafeMode
 	CalibrationDischargeThreshold() int
 	CalibrationHoldDurationMinutes() int
@@ -29,6 +30,7 @@ type Config interface {
 	SetPreventSystemSleep(bool)
 	SetPreventSleepOnAdapterDisable(bool)
 	SetAllowNonRootAccess(bool)
+	SetAdapterMode(bool)
 	SetControlMagSafeLED(ControlMagSafeMode)
 	SetCron(string)
 	SetCalibrationDischargeThreshold(int)

@@ -339,6 +339,23 @@ func TestSetPreventSleepOnAdapterDisable_EnablingWhileDisabledAcquiresHold(t *te
 	}
 }
 
+func TestSetPreventSleepOnAdapterDisable_AdapterModeCanEnable(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, false)
+	capabilities = compatibility.Capabilities{ChargeControlMode: compatibility.ChargeControlAdapter}
+	configured := &handlerMockConf{}
+	conf = configured
+
+	request := httptest.NewRequest(http.MethodPut, "/prevent-sleep-on-adapter-disable", strings.NewReader("true"))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	setupRoutes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated || !configured.preventSleepOnAdapterDisable || adapter.enabled || !sleep.value {
+		t.Fatalf("adapter mode sleep policy not enabled: status=%d, setting=%t, adapter=%t, sleep=%t", response.Code, configured.preventSleepOnAdapterDisable, adapter.enabled, sleep.value)
+	}
+}
+
 func TestSetPreventSleepOnAdapterDisable_DisablingWhileDisabledRestoresHold(t *testing.T) {
 	previousConf, previousCap := conf, capabilities
 	previousIsAdapter := smcIsAdapterEnabled

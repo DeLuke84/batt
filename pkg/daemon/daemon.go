@@ -54,6 +54,7 @@ func setupRoutes() *gin.Engine {
 	router.GET("/charging", getCharging)
 	router.GET("/battery-info", getBatteryInfo)
 	router.PUT("/magsafe-led", setControlMagSafeLED)
+	router.PUT("/adapter-mode", setAdapterMode)
 	router.GET("/current-charge", getCurrentCharge)
 	router.GET("/plugged-in", getPluggedIn)
 	router.GET("/charging-control-capable", getChargingControlCapable)
@@ -80,6 +81,31 @@ func setupRoutes() *gin.Engine {
 	return router
 }
 
+// removeStaleSocket removes a unix socket file left behind by a daemon that was
+// killed uncleanly, so a launchd-restarted daemon can bind again. It refuses to
+// remove a socket that another daemon is still actively listening on.
+func removeStaleSocket(path string) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat socket %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%s exists and is not a socket; refusing to remove", path)
+	}
+	if c, derr := net.DialTimeout("unix", path, 500*time.Millisecond); derr == nil {
+		_ = c.Close()
+		return fmt.Errorf("another batt daemon is already listening on %s", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove stale socket %s: %w", path, err)
+	}
+	logrus.Infof("removed stale unix socket %s left by a previous daemon", path)
+	return nil
+}
+
 func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	var err error
 	conf, err = config.NewFile(configPath)
@@ -95,6 +121,7 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		return fmt.Errorf("open Apple SMC: %w", err)
 	}
 	capabilities = detectCapabilities()
+	charger = selectCharger(capabilities.ChargeControlMode)
 	logrus.WithFields(capabilityLogFields(capabilities)).Info("detected hardware capabilities")
 	disableUnsupportedConfiguredFeatures()
 
@@ -102,7 +129,7 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	disableUnsupportedCalibrationState()
 	restoreCalibrationSleepAssertion()
 
-	if capabilities.AdapterControl {
+	if adapterSleepPolicyCapable() {
 		if err := reconcileAdapterSleepPolicy(); err != nil {
 			logrus.WithError(err).Error("failed to reconcile adapter sleep policy during startup")
 		}
@@ -177,6 +204,16 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		Handler: router,
 	}
 
+	// A daemon killed uncleanly (SIGKILL, panic, power loss) leaves its unix
+	// socket file behind. bind() then fails with EADDRINUSE and, because
+	// launchd keeps restarting us, traps the daemon in a crash loop that never
+	// recovers — leaving the charge limit unenforced (and, in adapter mode, the
+	// adapter cut and the Mac on battery). launchd runs a single instance, so
+	// no live daemon owns the path here; remove a stale socket before binding.
+	if err := removeStaleSocket(unixSocketPath); err != nil {
+		logrus.Fatal(err)
+	}
+
 	// Create the socket to listen on:
 	l, err := net.Listen("unix", unixSocketPath)
 	if err != nil {
@@ -199,17 +236,14 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		}
 	}()
 
-	listeningForSleep := capabilities.SleepHooks
-	if listeningForSleep {
-		go func() {
-			if err := listenNotifications(); err != nil {
-				logrus.Errorf("failed to listen to system sleep notifications: %v", err)
-				os.Exit(1)
-			}
-		}()
-	} else {
-		logrus.Info("system sleep notifications are not needed for this charge-control mode")
-	}
+	// Always listen: the callbacks no-op unless batt actively controls charging,
+	// and this lets a runtime adapter-mode toggle get working sleep hooks.
+	go func() {
+		if err := listenNotifications(); err != nil {
+			logrus.Errorf("failed to listen to system sleep notifications: %v", err)
+			os.Exit(1)
+		}
+	}()
 
 	go func() {
 		logrus.Debugln("main loop starts")
@@ -235,10 +269,8 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	}
 	cancel()
 
-	if listeningForSleep {
-		logrus.Info("stopping listening notifications")
-		stopListeningNotifications()
-	}
+	logrus.Info("stopping listening notifications")
+	stopListeningNotifications()
 
 	if err := AllowSleepOnAC(); err != nil {
 		logrus.Errorf("failed to remove PM assertion before exiting: %v", err)
@@ -248,7 +280,7 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	}
 
 	if capabilities.ChargingControl {
-		if err := smcConn.ResetChargeControl(); err != nil {
+		if err := resetChargeControl(); err != nil {
 			logrus.Errorf("failed to reset charge control before exiting: %v", err)
 		}
 	}
@@ -268,7 +300,7 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 }
 
 func shutdownAdapterAndSleep() error {
-	if capabilities.AdapterControl {
+	if adapterSleepPolicyCapable() {
 		if err := smcEnableAdapter(); err != nil {
 			logrus.Errorf("failed to re-enable adapter before exiting: %v", err)
 			return err

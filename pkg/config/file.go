@@ -36,6 +36,7 @@ var (
 		PreventSleepOnAdapterDisable: ptr.To(false),
 		PreventSystemSleep:           ptr.To(false),
 		AllowNonRootAccess:           ptr.To(false),
+		AdapterMode:                  ptr.To(false),
 		LowerLimitDelta:              ptr.To(2),
 
 		CalibrationDischargeThreshold:  ptr.To(15),
@@ -117,6 +118,7 @@ type RawFileConfig struct {
 	DisableChargingPreSleep *bool               `json:"disableChargingPreSleep,omitempty"`
 	PreventSystemSleep      *bool               `json:"preventSystemSleep,omitempty"`
 	AllowNonRootAccess      *bool               `json:"allowNonRootAccess,omitempty"`
+	AdapterMode             *bool               `json:"adapterMode,omitempty"`
 	LowerLimitDelta         *int                `json:"lowerLimitDelta,omitempty"`
 	ControlMagSafeLED       *ControlMagSafeMode `json:"controlMagSafeLED,omitempty"`
 
@@ -143,6 +145,7 @@ func NewRawFileConfigFromConfig(c Config) (*RawFileConfig, error) {
 		PreventSystemSleep:           ptr.To(c.PreventSystemSleep()),
 		PreventSleepOnAdapterDisable: ptr.To(c.PreventSleepOnAdapterDisable()),
 		AllowNonRootAccess:           ptr.To(c.AllowNonRootAccess()),
+		AdapterMode:                  ptr.To(c.AdapterMode()),
 		LowerLimitDelta:              ptr.To(c.UpperLimit() - c.LowerLimit()),
 		ControlMagSafeLED:            ptr.To(c.ControlMagSafeLED()),
 		Cron:                         ptr.To(c.Cron()),
@@ -271,6 +274,18 @@ func (f *File) AllowNonRootAccess() bool {
 	}
 
 	return allowNonRootAccess
+}
+
+func (f *File) AdapterMode() bool {
+	if f.c == nil {
+		panic("config is nil")
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.c.AdapterMode != nil {
+		return *f.c.AdapterMode
+	}
+	return *defaultFileConfig.AdapterMode
 }
 
 func (f *File) ControlMagSafeLED() ControlMagSafeMode {
@@ -430,6 +445,15 @@ func (f *File) SetAllowNonRootAccess(b bool) {
 	defer f.mu.Unlock()
 
 	f.c.AllowNonRootAccess = &b
+}
+
+func (f *File) SetAdapterMode(b bool) {
+	if f.c == nil {
+		panic("config is nil")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.c.AdapterMode = &b
 }
 
 func (f *File) SetControlMagSafeLED(mode ControlMagSafeMode) {

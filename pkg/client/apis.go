@@ -64,6 +64,10 @@ func (c *Client) SetPreventSleepOnAdapterDisable(enabled bool) (string, error) {
 	return c.Put("/prevent-sleep-on-adapter-disable", strconv.FormatBool(enabled))
 }
 
+func (c *Client) SetAdapterMode(enabled bool) (string, error) {
+	return c.Put("/adapter-mode", strconv.FormatBool(enabled))
+}
+
 func (c *Client) SetControlMagSafeLED(mode config.ControlMagSafeMode) (string, error) {
 	payload, err := json.Marshal(mode)
 	if err != nil {

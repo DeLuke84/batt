@@ -49,6 +49,8 @@ import (
 	"sync"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/charlie0129/batt/pkg/compatibility"
 )
 
 // SleepDisabled is a global, persistent system power setting. Unlike a power
@@ -420,6 +422,12 @@ func enableAdapterWithSleepPolicy() error {
 	return nil
 }
 
+// adapterSleepPolicyCapable includes adapter mode, which owns the adapter for
+// charge limiting but deliberately hides manual adapter controls from the API.
+func adapterSleepPolicyCapable() bool {
+	return capabilities.Supports(compatibility.FeatureAdapterSleepPolicy)
+}
+
 // reconcileAdapterSleepPolicy inspects the actual adapter state and ensures that
 // the sleep hold matches policy:
 //   - if the adapter is disabled and prevent-sleep-on-adapter-disable is enabled,
@@ -431,7 +439,7 @@ func reconcileAdapterSleepPolicy() error {
 	adapterPolicyMu.Lock()
 	defer adapterPolicyMu.Unlock()
 
-	if !capabilities.AdapterControl {
+	if !adapterSleepPolicyCapable() {
 		return nil
 	}
 
