@@ -275,6 +275,30 @@ func TestSetLimitCancelsChargeOnce(t *testing.T) {
 	}
 }
 
+func TestSupersedeChargeOnceSaveFailureKeepsTargetAndLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name, path, body string
+	}{
+		{"limit change", "/limit", "60"},
+		{"timed disable", "/disable", `"1h"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100, saveErr: errors.New("disk full")}
+			useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+			request := httptest.NewRequest(http.MethodPut, tt.path, strings.NewReader(tt.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			setupRoutes().ServeHTTP(response, request)
+			if response.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500: %s", response.Code, response.Body.String())
+			}
+			if configured.chargeOnceTarget != 100 || configured.upper != 70 || !configured.disableUntil.IsZero() {
+				t.Fatalf("failed save must keep original target and limit: %+v", configured)
+			}
+		})
+	}
+}
+
 func TestStartCalibrationRejectsChargeOnce(t *testing.T) {
 	configured := &mockConf{upper: 70, lower: 40, chargeOnceTarget: 100}
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
@@ -526,11 +550,13 @@ func TestAdapterModeOneTimeChargeRestoresWallPower(t *testing.T) {
 	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
 	useAdapterCapabilities(t)
 	adapterMockSMC(t, 65, true, false)
+	native := &fakeNativeLimit{supported: true, limit: 80, enabled: true}
+	useFakeNativeLimit(t, native)
 	fake := &fakeCharger{enabled: false}
 	useCharger(t, fake)
 
-	if !maintainLoopForced() || fake.enables != 1 || !fake.enabled {
-		t.Fatalf("one-time charge in adapter mode must restore wall power: %+v", fake)
+	if !maintainLoopForced() || fake.enables != 1 || !fake.enabled || native.enabled {
+		t.Fatalf("adapter-mode charge must clear native limit and restore wall power: charger=%+v native=%+v", fake, native)
 	}
 }
 

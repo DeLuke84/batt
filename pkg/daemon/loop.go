@@ -535,6 +535,12 @@ func maintainActiveCharging(ignoreMissedLoops bool) bool {
 	}
 
 	chargeOnceTarget := activeChargeOnceTarget()
+	if chargeOnceTarget > 0 && capabilities.ChargeControlMode == compatibility.ChargeControlAdapter && nativeLimit.Supported() {
+		if _, err := ensureNativeChargeLimitDisabled(); err != nil {
+			logrus.WithError(err).Error("failed to clear native limit for adapter-mode one-time charge")
+			return false
+		}
+	}
 
 	maintainedChargingInProgress = isChargingEnabled && isPluggedIn && calibrationState.Phase == calibration.PhaseIdle
 	printStatus(batteryCharge, lower, upper, chargeOnceTarget, isChargingEnabled, isPluggedIn, maintainedChargingInProgress, calibrationState.Phase != calibration.PhaseIdle)

@@ -50,19 +50,30 @@ func detectCapabilities() compatibility.Capabilities {
 // reapplyChargeControlMode re-detects capabilities after the adapter-mode
 // setting changed, restores wall power when leaving adapter mode, and enforces
 // the new mode immediately.
-func reapplyChargeControlMode() {
+func reapplyChargeControlMode() error {
 	maintainLoopInnerLock.Lock()
 	prev := capabilities.ChargeControlMode
-	capabilities = detectCapabilities()
-	charger = selectCharger(capabilities.ChargeControlMode)
+	next := detectCapabilities()
+	if prev == compatibility.ChargeControlNative && next.ChargeControlMode == compatibility.ChargeControlAdapter {
+		if _, err := ensureNativeChargeLimitDisabled(); err != nil {
+			maintainLoopInnerLock.Unlock()
+			return fmt.Errorf("failed to disable native limit before entering adapter mode: %w", err)
+		}
+	}
+	if prev == compatibility.ChargeControlAdapter && next.ChargeControlMode != compatibility.ChargeControlAdapter {
+		if err := smcConn.EnableAdapter(); err != nil {
+			maintainLoopInnerLock.Unlock()
+			return fmt.Errorf("failed to restore adapter before leaving adapter mode: %w", err)
+		}
+	}
+	capabilities = next
+	charger = selectCharger(next.ChargeControlMode)
 	maintainLoopInnerLock.Unlock()
 
-	if prev == compatibility.ChargeControlAdapter && capabilities.ChargeControlMode != compatibility.ChargeControlAdapter {
-		_ = smcConn.EnableAdapter()
-	}
-	logrus.WithFields(capabilityLogFields(capabilities)).Info("reapplied charge control mode")
+	logrus.WithFields(capabilityLogFields(next)).Info("reapplied charge control mode")
 	disableUnsupportedConfiguredFeatures()
 	maintainLoopForced()
+	return nil
 }
 
 // detectNativeChargeControl falls back to the charge limit built into macOS

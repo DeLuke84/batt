@@ -174,21 +174,22 @@ func cancelChargeOnce() (int, error) {
 	return target, nil
 }
 
-// supersedeChargeOnce drops a running one-time charge because the caller is
-// making an explicit charge-control change that replaces it. The caller saves
-// the config afterwards.
-func supersedeChargeOnce(reason string) {
+// supersedeChargeOnce clears the in-memory target as part of a caller-owned
+// config update. The caller restores it on save failure and reports the
+// cancellation only after the new config has been persisted.
+func supersedeChargeOnce() int {
 	target := conf.ChargeOnceTarget()
+	if target != 0 {
+		conf.ClearChargeOnceTarget()
+	}
+	return target
+}
+
+func reportSupersededChargeOnce(target int, reason string) {
 	if target == 0 {
 		return
 	}
-
-	conf.ClearChargeOnceTarget()
-	logrus.WithFields(logrus.Fields{
-		"target": target,
-		"reason": reason,
-	}).Info("cancelled the one-time charge")
-
+	logrus.WithFields(logrus.Fields{"target": target, "reason": reason}).Info("cancelled the one-time charge")
 	publishChargeOnceEvent(chargeOnceActionCancel, target,
 		fmt.Sprintf("One-time charge to %d%% cancelled: %s.", target, reason))
 }

@@ -73,16 +73,28 @@ func setLimit(c *gin.Context) {
 		return
 	}
 
+	previousLimit := conf.UpperLimit()
+	previousUntil, previousPreLimit := conf.DisableUntil(), conf.PreDisableLimit()
 	conf.SetUpperLimit(l)
 	// An explicit limit change overrides any pending scheduled re-enabling.
 	conf.ClearDisableTimer()
-	supersedeChargeOnce(fmt.Sprintf("charge limit set to %d%%", l))
+	superseded := supersedeChargeOnce()
 	if err := conf.Save(); err != nil {
+		conf.SetUpperLimit(previousLimit)
+		if previousUntil.IsZero() {
+			conf.ClearDisableTimer()
+		} else {
+			conf.SetDisableTimer(previousUntil, previousPreLimit)
+		}
+		if superseded != 0 {
+			conf.SetChargeOnceTarget(superseded)
+		}
 		logrus.Errorf("saveConfig failed: %v", err)
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		_ = c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
+	reportSupersededChargeOnce(superseded, fmt.Sprintf("charge limit set to %d%%", l))
 
 	logrus.Infof("set charging limit to %d", l)
 
@@ -178,15 +190,27 @@ func setDisableFor(c *gin.Context) {
 	}
 
 	until := time.Now().Add(d).Truncate(time.Second)
-	supersedeChargeOnce("charge limit temporarily disabled")
+	previousLimit := conf.UpperLimit()
+	previousUntil, previousPreLimit := conf.DisableUntil(), conf.PreDisableLimit()
+	superseded := supersedeChargeOnce()
 	conf.SetUpperLimit(100)
 	conf.SetDisableTimer(until, prevLimit)
 	if err := conf.Save(); err != nil {
+		conf.SetUpperLimit(previousLimit)
+		if previousUntil.IsZero() {
+			conf.ClearDisableTimer()
+		} else {
+			conf.SetDisableTimer(previousUntil, previousPreLimit)
+		}
+		if superseded != 0 {
+			conf.SetChargeOnceTarget(superseded)
+		}
 		logrus.Errorf("saveConfig failed: %v", err)
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		_ = c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
+	reportSupersededChargeOnce(superseded, "charge limit temporarily disabled")
 
 	logrus.WithFields(logrus.Fields{
 		"until":     until.Format(time.DateTime),
@@ -577,12 +601,25 @@ func setAdapterMode(c *gin.Context) {
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		return
 	}
+
+	chargeControlTransitionMu.Lock()
+	defer chargeControlTransitionMu.Unlock()
+
+	previous := conf.AdapterMode()
 	conf.SetAdapterMode(enabled)
 	if err := conf.Save(); err != nil {
+		conf.SetAdapterMode(previous)
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		return
 	}
-	reapplyChargeControlMode()
+	if err := reapplyChargeControlMode(); err != nil {
+		conf.SetAdapterMode(previous)
+		if saveErr := conf.Save(); saveErr != nil {
+			err = fmt.Errorf("%w; failed to save adapter mode rollback: %v", err, saveErr)
+		}
+		c.IndentedJSON(http.StatusInternalServerError, err.Error())
+		return
+	}
 	c.IndentedJSON(http.StatusCreated, fmt.Sprintf("adapter mode set to %t, charge control is now %s", enabled, capabilities.ChargeControlMode))
 }
 
@@ -767,6 +804,16 @@ func startChargeOnceRequest(c *gin.Context, full bool) {
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		_ = c.AbortWithError(http.StatusBadRequest, err)
 		return
+	}
+
+	// Adapter mode must not inherit a native macOS limit from a previous mode
+	// or reboot: that ceiling would prevent a one-time charge from progressing.
+	if capabilities.ChargeControlMode == compatibility.ChargeControlAdapter && nativeLimit.Supported() {
+		if _, err := ensureNativeChargeLimitDisabled(); err != nil {
+			c.IndentedJSON(http.StatusInternalServerError, err.Error())
+			_ = c.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	message := chargeOnceStartedMessage(target, charge, conf.UpperLimit())
