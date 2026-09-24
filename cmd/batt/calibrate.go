@@ -156,7 +156,7 @@ Must be between 10 and 1440 minutes (24 hours). Default is 120 minutes.`,
 
 func printCalibrationStatus(st *calibration.Status) {
 	bold := func(format string, a ...interface{}) string { return color.New(color.Bold).Sprintf(format, a...) }
-	fmt.Printf("Phase: %s\n", bold("%s", st.Phase))
+	fmt.Printf("Phase: %s\n", bold("%s", string(st.Phase)))
 	fmt.Printf("Charge: %s\n", bold("%d%%", st.ChargePercent))
 	fmt.Printf("Plugged In: %v\n", st.PluggedIn)
 	if st.Phase == calibration.PhaseHold && st.RemainingHoldSecs > 0 {

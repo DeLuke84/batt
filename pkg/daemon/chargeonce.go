@@ -24,6 +24,7 @@ const (
 	chargeOnceActionStart    = "Start"
 	chargeOnceActionCancel   = "Cancel"
 	chargeOnceActionComplete = "Complete"
+	chargeOnceLimitField     = "limit"
 )
 
 var (
@@ -31,6 +32,7 @@ var (
 	ErrChargeOnceNotRunning = errors.New("no one-time charge is in progress")
 	ErrChargeLimitDisabled  = errors.New("batt is not limiting charging, so a one-time charge would have no effect. Set a limit first with 'batt limit <percentage>'")
 	ErrChargeLimitTooLow    = errors.New("the configured charge limit is below 10%, which batt does not support. Set a valid limit with 'batt limit <percentage>'")
+	ErrNativeChargeNow      = errors.New("macOS controls when charging starts at a native charge limit; charging to the limit now is not available in this mode. Use 'batt charge full' instead")
 	ErrAdapterDisabled      = errors.New("the power adapter is disabled, so a one-time charge would make no progress. Enable it first with 'batt adapter enable'")
 )
 
@@ -136,9 +138,9 @@ func startChargeOnce(target, charge int) error {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"target": target,
-		"charge": charge,
-		"limit":  conf.UpperLimit(),
+		"target":             target,
+		"charge":             charge,
+		chargeOnceLimitField: conf.UpperLimit(),
 	}).Info("started a one-time charge")
 
 	publishChargeOnceEvent(chargeOnceActionStart, target, chargeOnceStartedMessage(target, charge, conf.UpperLimit()))
@@ -163,8 +165,8 @@ func cancelChargeOnce() (int, error) {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"target": target,
-		"limit":  conf.UpperLimit(),
+		"target":             target,
+		chargeOnceLimitField: conf.UpperLimit(),
 	}).Info("cancelled the one-time charge")
 
 	publishChargeOnceEvent(chargeOnceActionCancel, target,
@@ -227,9 +229,9 @@ func completeChargeOnce(conf config.Config) bool {
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"target": target,
-		"charge": charge,
-		"limit":  conf.UpperLimit(),
+		"target":             target,
+		"charge":             charge,
+		chargeOnceLimitField: conf.UpperLimit(),
 	}).Info("one-time charge reached its target, charge limit applies again")
 
 	publishChargeOnceEvent(chargeOnceActionComplete, target,

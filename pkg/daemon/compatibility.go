@@ -14,26 +14,81 @@ import (
 
 func detectCapabilities() compatibility.Capabilities {
 	mode := smcConn.ChargeControlMode()
-	legacy := mode == compatibility.ChargeControlLegacy
 	adapter := smcConn.IsAdapterControlCapable()
+	var supportedLimits []int
+	if mode == compatibility.ChargeControlUnsupported {
+		// Adapter mode is opt-in; otherwise fall back to the native limit.
+		switch {
+		case adapter && conf.AdapterMode():
+			mode = compatibility.ChargeControlAdapter
+		default:
+			mode, supportedLimits = detectNativeChargeControl()
+		}
+	}
+	legacy := mode == compatibility.ChargeControlLegacy
+	active := legacy || mode == compatibility.ChargeControlAdapter
 	return compatibility.Capabilities{
 		ChargingControl:   mode != compatibility.ChargeControlUnsupported,
 		ChargeControlMode: mode,
-		SleepHooks:        legacy,
-		// LED state follows batt's direct charging state, which is not
-		// available when the firmware owns charge control.
-		MagSafeLED:     legacy && smcConn.CheckMagSafeExistence(),
-		AdapterControl: adapter,
-		// Adapter control performs the discharge phases. Both the legacy and
-		// firmware backends can temporarily allow charging to 100%.
-		Calibration: mode != compatibility.ChargeControlUnsupported && adapter,
+		SupportedLimits:   supportedLimits,
+		// The legacy and adapter loops both run while awake and rely on the
+		// sleep hooks to avoid overcharging during sleep.
+		SleepHooks: active,
+		// LED state follows batt's direct charging state, which is only known
+		// when batt owns the charge-enable keys.
+		MagSafeLED: legacy && smcConn.CheckMagSafeExistence(),
+		// In adapter mode batt owns the adapter to enforce the limit, so the
+		// manual adapter/force-discharge feature is hidden to avoid conflicts.
+		AdapterControl: adapter && mode != compatibility.ChargeControlAdapter,
+		// Calibration drives the adapter through discharge phases. It is not
+		// yet wired for adapter mode, which already owns the adapter.
+		Calibration: mode != compatibility.ChargeControlUnsupported &&
+			mode != compatibility.ChargeControlAdapter && adapter,
 	}
+}
+
+// reapplyChargeControlMode re-detects capabilities after the adapter-mode
+// setting changed, restores wall power when leaving adapter mode, and enforces
+// the new mode immediately.
+func reapplyChargeControlMode() {
+	maintainLoopInnerLock.Lock()
+	prev := capabilities.ChargeControlMode
+	capabilities = detectCapabilities()
+	charger = selectCharger(capabilities.ChargeControlMode)
+	maintainLoopInnerLock.Unlock()
+
+	if prev == compatibility.ChargeControlAdapter && capabilities.ChargeControlMode != compatibility.ChargeControlAdapter {
+		_ = smcConn.EnableAdapter()
+	}
+	logrus.WithFields(capabilityLogFields(capabilities)).Info("reapplied charge control mode")
+	disableUnsupportedConfiguredFeatures()
+	maintainLoopForced()
+}
+
+// detectNativeChargeControl falls back to the charge limit built into macOS
+// when the SMC keys are gated (macOS 27 beta 4+ firmware). It only reports the
+// native mode when PowerUIAgent supports the limit and lists usable values.
+func detectNativeChargeControl() (compatibility.ChargeControlMode, []int) {
+	if !nativeLimit.Supported() {
+		return compatibility.ChargeControlUnsupported, nil
+	}
+	limits, err := nativeLimit.AvailableLimits()
+	if err != nil {
+		logrus.WithError(err).Warn("macOS reports a manual charge limit but its supported values could not be read")
+		return compatibility.ChargeControlUnsupported, nil
+	}
+	if len(limits) == 0 {
+		logrus.Warn("macOS reports a manual charge limit but offers no supported values")
+		return compatibility.ChargeControlUnsupported, nil
+	}
+	return compatibility.ChargeControlNative, limits
 }
 
 func capabilityLogFields(capabilities compatibility.Capabilities) logrus.Fields {
 	return logrus.Fields{
 		"chargingControl":   capabilities.ChargingControl,
 		"chargeControlMode": capabilities.ChargeControlMode,
+		"supportedLimits":   capabilities.SupportedLimits,
 		"sleepHooks":        capabilities.SleepHooks,
 		"magSafeLED":        capabilities.MagSafeLED,
 		"adapterControl":    capabilities.AdapterControl,
@@ -98,7 +153,20 @@ func disableUnsupportedConfiguredFeatures() {
 		conf.ClearAdapterDisableTimer()
 		changed = true
 	}
-	if !capabilities.ChargingControl && conf.ChargeOnceTarget() != 0 {
+	// A limit configured before an upgrade may not be one macOS offers. Raise
+	// it to the next supported value rather than charging past it.
+	if upper := conf.UpperLimit(); !capabilities.SupportsLimit(upper) {
+		snapped := capabilities.NearestSupportedLimit(upper)
+		logrus.WithFields(logrus.Fields{
+			"configured":      upper,
+			"limit":           snapped,
+			"supportedLimits": capabilities.SupportedLimits,
+		}).Warn("configured charge limit is not offered by this Mac, raising it to the next supported limit")
+		conf.SetUpperLimit(snapped)
+		changed = true
+	}
+	if target := conf.ChargeOnceTarget(); target != 0 && (!capabilities.ChargingControl ||
+		(capabilities.ChargeControlMode == compatibility.ChargeControlNative && target < 100)) {
 		conf.ClearChargeOnceTarget()
 		changed = true
 	}

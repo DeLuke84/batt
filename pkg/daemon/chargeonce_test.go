@@ -521,6 +521,45 @@ func TestFirmwareMaintainLoopAppliesChargeOnceBand(t *testing.T) {
 	}
 }
 
+func TestAdapterModeOneTimeChargeRestoresWallPower(t *testing.T) {
+	configured := &mockConf{upper: 60, lower: 55, chargeOnceTarget: 100}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	useAdapterCapabilities(t)
+	adapterMockSMC(t, 65, true, false)
+	fake := &fakeCharger{enabled: false}
+	useCharger(t, fake)
+
+	if !maintainLoopForced() || fake.enables != 1 || !fake.enabled {
+		t.Fatalf("one-time charge in adapter mode must restore wall power: %+v", fake)
+	}
+}
+
+func TestNativeChargeOnceToFullUsesNativeLimit(t *testing.T) {
+	configured := &mockConf{upper: 80, lower: 78}
+	useChargeOnceDaemonState(t, configured, calibration.PhaseIdle)
+	useNativeCapabilities(t, 80, 85, 90, 95, 100)
+	fake := &fakeNativeLimit{supported: true, limits: []int{80, 85, 90, 95, 100}, limit: 80, enabled: true}
+	useFakeNativeLimit(t, fake)
+	stubBatteryCharge(t, 70)
+
+	if response := postChargeOnce(chargeOnceLimitPath); response.Code != http.StatusConflict {
+		t.Fatalf("native charge now must be rejected: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if configured.chargeOnceTarget != 0 {
+		t.Fatal("rejected native charge now must not persist a target")
+	}
+	if response := postChargeOnce(chargeOnceFullPath); response.Code != http.StatusCreated {
+		t.Fatalf("native charge full must be accepted: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if configured.chargeOnceTarget != 100 || fake.disables != 1 || fake.enabled {
+		t.Fatalf("native limit must be disabled until full: target=%d, limit=%+v", configured.chargeOnceTarget, fake)
+	}
+	configured.chargeOnceTarget = 0
+	if !maintainLoopForced() || !fake.enabled || fake.limit != 80 {
+		t.Fatalf("configured native limit must resume after completion: %+v", fake)
+	}
+}
+
 func TestChargeOnceReachedTarget(t *testing.T) {
 	tests := []struct {
 		name   string

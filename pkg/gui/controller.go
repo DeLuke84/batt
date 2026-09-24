@@ -316,7 +316,8 @@ func (c *menuController) setCompatibility(installed bool, capabilities compatibi
 	c.menu.setHidden(itemCurrentLimit, !installed || !capabilities.ChargingControl)
 	c.menu.setHidden(itemQuickLimits, !usable)
 	for _, item := range quickLimitItems {
-		c.menu.setHidden(item, !usable)
+		// macOS only offers a fixed set of limits on some firmware.
+		c.menu.setHidden(item, !usable || !capabilities.SupportsLimit(quickLimitForItem(item)))
 	}
 	for _, item := range chargeOnceItems {
 		c.menu.setHidden(item, !usable)
@@ -438,8 +439,9 @@ func canChargeOnceToLimit(
 	if upperLimit < 100 && chargeControlMode == compatibility.ChargeControlFirmware {
 		targetReached = currentCharge >= upperLimit-1
 	}
-	return canStartChargeOnce(phase, disableScheduled, adapterDisableScheduled, chargeOnceTarget,
-		adapterControl, adapterKnown, adapterEnabled) && chargeLimitActive(upperLimit) && !targetReached
+	return chargeControlMode != compatibility.ChargeControlNative &&
+		canStartChargeOnce(phase, disableScheduled, adapterDisableScheduled, chargeOnceTarget,
+			adapterControl, adapterKnown, adapterEnabled) && chargeLimitActive(upperLimit) && !targetReached
 }
 
 // canChargeOnceToFull reports whether a one-time charge to 100% would do

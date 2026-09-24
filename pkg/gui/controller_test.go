@@ -118,6 +118,10 @@ func TestChargeOnceMenuAvailability(t *testing.T) {
 			chargeControlMode: compatibility.ChargeControlFirmware, wantLimit: false, wantFull: true,
 		},
 		{
+			name: "native macOS cannot force charging to the limit", upperLimit: 80, currentCharge: 75,
+			chargeControlMode: compatibility.ChargeControlNative, wantLimit: false, wantFull: true,
+		},
+		{
 			name: "legacy target is not reached at target minus one", upperLimit: 80, currentCharge: 79,
 			chargeControlMode: compatibility.ChargeControlLegacy, wantLimit: true, wantFull: true,
 		},
