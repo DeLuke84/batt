@@ -129,12 +129,8 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	disableUnsupportedCalibrationState()
 	restoreCalibrationSleepAssertion()
 
-	if adapterSleepPolicyCapable() {
-		if err := reconcileAdapterSleepPolicy(); err != nil {
-			logrus.WithError(err).Error("failed to reconcile adapter sleep policy during startup")
-		}
-	} else if err := restorePendingSleepDisabled(); err != nil {
-		logrus.WithError(err).Error("failed to restore pending sleep-disabled state during startup")
+	if err := ensureStartupSleepPolicy(); err != nil {
+		return err
 	}
 
 	router := setupRoutes()
@@ -145,12 +141,17 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGHUP)
 		for range sigc {
+			chargeControlTransitionMu.Lock()
 			err := conf.Load()
+			if err == nil {
+				disableUnsupportedConfiguredFeatures()
+				err = reconcileReloadedSleepPolicy()
+			}
+			chargeControlTransitionMu.Unlock()
 			if err != nil {
-				logrus.Errorf("failed to reload config: %v", err)
+				logrus.WithError(err).Error("failed to reload config safely")
 				continue
 			}
-			disableUnsupportedConfiguredFeatures()
 			logrus.Infof("config reloaded")
 		}
 	}()
@@ -296,6 +297,29 @@ func Run(configPath string, unixSocketPath string, allowNonRoot bool) error {
 	}
 
 	logrus.Info("exiting")
+	return nil
+}
+
+func reconcileReloadedSleepPolicy() error {
+	if !adapterSleepPolicyCapable() {
+		return nil
+	}
+	if err := reconcileAdapterSleepPolicy(); err != nil {
+		return restoreAdapterAfterPolicyError(err)
+	}
+	return nil
+}
+
+func ensureStartupSleepPolicy() error {
+	if adapterSleepPolicyCapable() {
+		if err := reconcileAdapterSleepPolicy(); err != nil {
+			return fmt.Errorf("startup: %w", restoreAdapterAfterPolicyError(err))
+		}
+		return nil
+	}
+	if err := restorePendingSleepDisabled(); err != nil {
+		return fmt.Errorf("failed to restore pending sleep-disabled state during startup: %w", err)
+	}
 	return nil
 }
 

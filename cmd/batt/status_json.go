@@ -109,7 +109,7 @@ func printStatusJSON(cmd *cobra.Command, data *statusData, cfg *config.File) err
 	}
 
 	var preventSleepOnAdapterDisable *bool
-	if data.capabilities.AdapterControl {
+	if data.capabilities.Supports(compatibility.FeatureAdapterSleepPolicy) {
 		val := cfg.PreventSleepOnAdapterDisable()
 		preventSleepOnAdapterDisable = &val
 	}

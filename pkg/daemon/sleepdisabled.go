@@ -359,8 +359,13 @@ func releaseAllSleepHolds() error {
 func restoreSleepLocked() error {
 	if sleepDisabledPrevious {
 		// Sleep was already disabled before batt held it. Leave it alone.
+		// Keep the original value until the snapshot is removed: a failed
+		// removal must not make a later retry write SleepDisabled=false.
+		if err := clearSleepDisabledSnapshotLocked(); err != nil {
+			return err
+		}
 		sleepDisabledPrevious = false
-		return clearSleepDisabledSnapshotLocked()
+		return nil
 	}
 
 	if err := setSleepDisabled(false); err != nil {
@@ -420,6 +425,16 @@ func enableAdapterWithSleepPolicy() error {
 	}
 
 	return nil
+}
+
+// restoreAdapterAfterPolicyError restores wall power before reporting a failed
+// sleep reconciliation. Never continue with the adapter cut and protection
+// missing; leave the snapshot intact if restoration itself fails.
+func restoreAdapterAfterPolicyError(policyErr error) error {
+	if err := smcEnableAdapter(); err != nil {
+		return fmt.Errorf("adapter sleep policy failed (%v); failed to restore wall power: %w", policyErr, err)
+	}
+	return fmt.Errorf("adapter sleep policy failed; wall power restored: %w", policyErr)
 }
 
 // adapterSleepPolicyCapable includes adapter mode, which owns the adapter for

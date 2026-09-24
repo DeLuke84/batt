@@ -627,12 +627,25 @@ func setAdapterMode(c *gin.Context) {
 		c.IndentedJSON(http.StatusBadRequest, err.Error())
 		return
 	}
+
+	chargeControlTransitionMu.Lock()
+	defer chargeControlTransitionMu.Unlock()
+
+	previous := conf.AdapterMode()
 	conf.SetAdapterMode(enabled)
 	if err := conf.Save(); err != nil {
+		conf.SetAdapterMode(previous)
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())
 		return
 	}
-	reapplyChargeControlMode()
+	if err := reapplyChargeControlMode(); err != nil {
+		conf.SetAdapterMode(previous)
+		if saveErr := conf.Save(); saveErr != nil {
+			err = fmt.Errorf("%w; failed to save adapter mode rollback: %v", err, saveErr)
+		}
+		c.IndentedJSON(http.StatusInternalServerError, err.Error())
+		return
+	}
 	c.IndentedJSON(http.StatusCreated, fmt.Sprintf("adapter mode set to %t, charge control is now %s", enabled, capabilities.ChargeControlMode))
 }
 

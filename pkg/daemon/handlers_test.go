@@ -10,6 +10,7 @@ import (
 
 	"github.com/charlie0129/batt/pkg/calibration"
 	"github.com/charlie0129/batt/pkg/compatibility"
+	"github.com/charlie0129/batt/pkg/config"
 )
 
 func TestResolveDisableLimit(t *testing.T) {
@@ -286,6 +287,62 @@ func (h *handlerMockConf) PreventSleepOnAdapterDisable() bool {
 
 func (h *handlerMockConf) SetPreventSleepOnAdapterDisable(p bool) {
 	h.preventSleepOnAdapterDisable = p
+}
+
+func TestSetAdapterMode_RollsBackWhenWallPowerCannotBeRestored(t *testing.T) {
+	stubSleepDisabled(t, false)
+	adapterMockSMC(t, 60, true, false)
+	adapter := stubAdapter(t, false)
+	adapter.enableErr = errors.New("SMC enable failed")
+	file, path := useTempConfig(t)
+	file.SetAdapterMode(true)
+	if err := file.Save(); err != nil {
+		t.Fatal(err)
+	}
+	previousCap, previousCharger := capabilities, charger
+	t.Cleanup(func() { capabilities, charger = previousCap, previousCharger })
+	capabilities = compatibility.Capabilities{ChargeControlMode: compatibility.ChargeControlAdapter}
+
+	request := httptest.NewRequest(http.MethodPut, "/adapter-mode", strings.NewReader("false"))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	setupRoutes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError || !file.AdapterMode() || adapter.enabled || capabilities.ChargeControlMode != compatibility.ChargeControlAdapter {
+		t.Fatalf("failed transition must keep adapter mode: status=%d, configured=%t, adapter=%t, mode=%s", response.Code, file.AdapterMode(), adapter.enabled, capabilities.ChargeControlMode)
+	}
+	reloaded, err := config.NewFile(path)
+	if err != nil || !reloaded.AdapterMode() {
+		t.Fatalf("failed transition must roll back persisted config: config=%v, err=%v", reloaded, err)
+	}
+}
+
+func TestSetAdapterMode_ReconciliationFailureRollsBackAndRestoresPower(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	adapterMockSMC(t, 60, true, false)
+	adapter := stubAdapter(t, false)
+	file, path := useTempConfig(t)
+	previousCap, previousCharger := capabilities, charger
+	t.Cleanup(func() { capabilities, charger = previousCap, previousCharger })
+	capabilities = compatibility.Capabilities{AdapterControl: true}
+	file.SetPreventSleepOnAdapterDisable(true)
+	if err := file.Save(); err != nil {
+		t.Fatal(err)
+	}
+	sleep.setErr = errors.New("IOPM unavailable")
+
+	request := httptest.NewRequest(http.MethodPut, "/adapter-mode", strings.NewReader("true"))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	setupRoutes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusInternalServerError || file.AdapterMode() || !adapter.enabled {
+		t.Fatalf("failed policy must roll back mode and restore wall power: status=%d, configured=%t, adapter=%t", response.Code, file.AdapterMode(), adapter.enabled)
+	}
+	reloaded, err := config.NewFile(path)
+	if err != nil || reloaded.AdapterMode() {
+		t.Fatalf("failed transition must roll back persisted config: config=%v, err=%v", reloaded, err)
+	}
 }
 
 func TestSetPreventSleepOnAdapterDisable_RequiresCapability(t *testing.T) {

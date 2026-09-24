@@ -16,6 +16,7 @@ func TestPrintStatusJSON_PreventSleepOnAdapterDisable(t *testing.T) {
 	tests := []struct {
 		name                 string
 		adapterControl       bool
+		mode                 compatibility.ChargeControlMode
 		preventSleep         bool
 		wantPreventSleepJSON bool
 		wantVal              bool
@@ -33,6 +34,13 @@ func TestPrintStatusJSON_PreventSleepOnAdapterDisable(t *testing.T) {
 			preventSleep:         false,
 			wantPreventSleepJSON: true,
 			wantVal:              false,
+		},
+		{
+			name:                 "adapter mode exposes sleep protection",
+			mode:                 compatibility.ChargeControlAdapter,
+			preventSleep:         true,
+			wantPreventSleepJSON: true,
+			wantVal:              true,
 		},
 		{
 			name:                 "unsupported adapter control omits field",
@@ -57,8 +65,9 @@ func TestPrintStatusJSON_PreventSleepOnAdapterDisable(t *testing.T) {
 
 			data := &statusData{
 				capabilities: compatibility.Capabilities{
-					ChargingControl: true,
-					AdapterControl:  tt.adapterControl,
+					ChargingControl:   true,
+					AdapterControl:    tt.adapterControl,
+					ChargeControlMode: tt.mode,
 				},
 				batteryInfo: &powerinfo.Battery{
 					State: powerinfo.Charging,

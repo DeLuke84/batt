@@ -304,6 +304,39 @@ func TestFailedReleaseKeepsHoldAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestFailedSnapshotRemovalPreservesPreExistingSleepSetting(t *testing.T) {
+	fake := stubSleepDisabled(t, true)
+	if err := holdSleep(sleepHoldAdapter); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sleepDisabledPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(sleepDisabledPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(sleepDisabledPath, "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := releaseSleep(sleepHoldAdapter); err == nil {
+		t.Fatal("expected snapshot removal to fail")
+	}
+	if !sleepHolds[sleepHoldAdapter] || !sleepDisabledPrevious || !fake.value {
+		t.Fatal("failed removal must preserve the hold and original SleepDisabled=true")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseSleep(sleepHoldAdapter); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.value || fake.writes != 0 {
+		t.Fatal("retry must not change the user's original SleepDisabled=true")
+	}
+}
+
 func TestPendingSnapshotWinsOverLiveValue(t *testing.T) {
 	// A snapshot on disk means an earlier restore did not complete. The live
 	// value is batt's leftover, not the user's setting, and must not be adopted.
@@ -412,6 +445,53 @@ func TestStartupReconcileKeepsSleepDisabledWithoutGap(t *testing.T) {
 		if !value {
 			t.Fatal("startup briefly restored sleep before reacquiring the hold")
 		}
+	}
+}
+
+func TestReloadReconcilesSleepImmediately(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+
+	if err := reconcileReloadedSleepPolicy(); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.enabled || !sleep.value || !sleepHolds[sleepHoldAdapter] {
+		t.Fatal("reload must hold sleep before returning while wall power is cut")
+	}
+}
+
+func TestStartupSleepPolicyFailureRestoresWallPower(t *testing.T) {
+	sleep := stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+	sleep.setErr = errors.New("IOPM unavailable")
+
+	if err := ensureStartupSleepPolicy(); err == nil {
+		t.Fatal("startup must fail when sleep protection cannot be established")
+	}
+	if !adapter.enabled {
+		t.Fatal("startup failure must restore wall power before returning")
+	}
+}
+
+func TestStartupSleepPolicyFailureKeepsSnapshotWhenAdapterCannotRestore(t *testing.T) {
+	stubSleepDisabled(t, false)
+	adapter := stubAdapter(t, false)
+	conf = &sleepPolicyConf{prevent: true}
+	if err := os.WriteFile(sleepDisabledPath, []byte("malformed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter.enableErr = errors.New("SMC unavailable")
+
+	if err := ensureStartupSleepPolicy(); err == nil {
+		t.Fatal("startup must fail when neither sleep protection nor wall power can be restored")
+	}
+	if adapter.enabled {
+		t.Fatal("adapter mock must still be disabled")
+	}
+	if _, err := os.Stat(sleepDisabledPath); err != nil {
+		t.Fatalf("failed recovery must preserve the snapshot: %v", err)
 	}
 }
 

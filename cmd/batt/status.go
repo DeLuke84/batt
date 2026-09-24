@@ -259,7 +259,7 @@ func NewStatusCommand() *cobra.Command {
 			} else {
 				cmd.Println("  Legacy sleep controls: " + bold("unsupported/not required"))
 			}
-			if data.capabilities.AdapterControl {
+			if data.capabilities.Supports(compatibility.FeatureAdapterSleepPolicy) {
 				cmd.Printf("  Prevent sleep while adapter is disabled: %s\n", bool2Text(cfg.PreventSleepOnAdapterDisable()))
 			}
 			cmd.Printf("  Allow non-root users to access the daemon: %s\n", bool2Text(cfg.AllowNonRootAccess()))

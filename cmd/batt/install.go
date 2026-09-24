@@ -77,6 +77,30 @@ By default, only root user is allowed to access the batt daemon for security rea
 	return cmd
 }
 
+type uninstallHardware interface {
+	IsChargingControlCapable() bool
+	ResetChargeControl() error
+	IsAdapterControlCapable() bool
+	EnableAdapter() error
+}
+
+func restoreUninstallHardware(hardware uninstallHardware, resetCharging bool) error {
+	var resetErr error
+	if resetCharging && hardware.IsChargingControlCapable() {
+		logrus.Info("resetting charge limits")
+		resetErr = hardware.ResetChargeControl()
+	}
+	if hardware.IsAdapterControlCapable() {
+		if err := hardware.EnableAdapter(); err != nil {
+			return fmt.Errorf("failed to enable adapter (charge-limit reset: %v): %w", resetErr, err)
+		}
+	}
+	if resetErr != nil {
+		return fmt.Errorf("failed to reset charge control: %w", resetErr)
+	}
+	return nil
+}
+
 // NewUninstallCommand .
 func NewUninstallCommand() *cobra.Command {
 	noResetCharging := false
@@ -100,32 +124,16 @@ You must run this command as root.`,
 				return fmt.Errorf("failed to uninstall daemon: %v", err)
 			}
 
-			if !noResetCharging {
-				logrus.Infof("resetting charge limits")
+			// Wall power must be restored before recovering SleepDisabled, even
+			// when --no-reset-charging skips the charge-limit reset.
+			smcC := smc.New()
+			if err := smcC.Open(); err != nil {
+				return fmt.Errorf("failed to open SMC: %w", err)
+			}
+			defer func() { _ = smcC.Close() }()
 
-				// Open Apple SMC for read/writing
-				smcC := smc.New()
-				if err := smcC.Open(); err != nil {
-					return fmt.Errorf("failed to open SMC: %v", err)
-				}
-
-				if smcC.IsChargingControlCapable() {
-					err = smcC.ResetChargeControl()
-					if err != nil {
-						return fmt.Errorf("failed to reset charge control: %v", err)
-					}
-				}
-
-				if smcC.IsAdapterControlCapable() {
-					err = smcC.EnableAdapter()
-					if err != nil {
-						return fmt.Errorf("failed to enable adapter: %v", err)
-					}
-				}
-
-				if err := smcC.Close(); err != nil {
-					return fmt.Errorf("failed to close SMC: %v", err)
-				}
+			if err := restoreUninstallHardware(smcC, !noResetCharging); err != nil {
+				return err
 			}
 
 			sleepStatePath := "/etc/batt.sleep.json"
