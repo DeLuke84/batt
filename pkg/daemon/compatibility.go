@@ -52,7 +52,9 @@ func detectCapabilities() compatibility.Capabilities {
 // the new mode immediately.
 func reapplyChargeControlMode() error {
 	maintainLoopInnerLock.Lock()
-	prev := capabilities.ChargeControlMode
+	previous := capabilities
+	previousCharger := charger
+	prev := previous.ChargeControlMode
 	next := detectCapabilities()
 	if prev == compatibility.ChargeControlNative && next.ChargeControlMode == compatibility.ChargeControlAdapter {
 		if _, err := ensureNativeChargeLimitDisabled(); err != nil {
@@ -70,9 +72,19 @@ func reapplyChargeControlMode() error {
 	charger = selectCharger(next.ChargeControlMode)
 	maintainLoopInnerLock.Unlock()
 
+	if !maintainLoopForced() {
+		maintainLoopInnerLock.Lock()
+		capabilities = previous
+		charger = previousCharger
+		maintainLoopInnerLock.Unlock()
+		if !maintainLoopForced() {
+			return fmt.Errorf("failed to enforce %s charge-control mode; previous %s mode could not be restored either", next.ChargeControlMode, prev)
+		}
+		return fmt.Errorf("failed to enforce %s charge-control mode; previous %s mode restored", next.ChargeControlMode, prev)
+	}
+
 	logrus.WithFields(capabilityLogFields(next)).Info("reapplied charge control mode")
 	disableUnsupportedConfiguredFeatures()
-	maintainLoopForced()
 	return nil
 }
 
